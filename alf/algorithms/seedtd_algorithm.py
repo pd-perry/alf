@@ -11,7 +11,7 @@ import random
 import alf
 from alf.algorithms.off_policy_algorithm import OffPolicyAlgorithm
 from alf.networks.relu_mlp import ReluMLP
-from alf.data_structures import AlgStep, LossInfo, namedtuple, TimeStep
+from alf.data_structures import AlgStep, LossInfo, namedtuple, StepType, TimeStep
 from alf.utils import value_ops, tensor_utils
 from alf.utils.losses import element_wise_squared_loss
 
@@ -31,10 +31,11 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
                  v=0.01,
                  gamma=0.99,
                  max_noise_buf_length=1000,
+                 max_episodic_reward=0,
                  env=None,
                  optimizer=None,
                  config: TrainerConfig = None,
-                 debug_summaries=False,
+                 debug_summaries=True,
                  name="SeedTDAlgorithm"):
         """
         Args:
@@ -54,6 +55,8 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
             max_noise_buf_length (int): the maximum length of the noise buffer. This number 
                 can exceed the number of elements that can be in the replay buffer. When this 
                 is the case, the extra noise terms will not be used. 
+            max_episodic_reward (int): the maximum reward each episode. Used to calculate
+                the cumulated training regret. 
             env (Environment): The environment to interact with. ``env`` is a
                 batched environment, which means that it runs multiple simulations
                 simultateously. ``env` only needs to be provided to the root
@@ -74,10 +77,9 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
                          config=config,
                          debug_summaries=debug_summaries,
                          name=name)
-        
-        assert action_spec.is_discrete, (
-            "Only support discrete actions")
 
+        # assert action_spec.is_discrete, (
+        #     "Only support discrete actions")
 
         self.num_actions = action_spec.maximum - action_spec.minimum + 1
         q_network_cls = QNetwork(input_tensor_spec=observation_spec, action_spec=action_spec)
@@ -91,12 +93,13 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
                                   self._env.batch_size)
             example_time_step = env.reset()
             self._metrics.append(alf.metrics.AverageRegretMetric(
-                    max_episodic_reward=26,
+                    max_episodic_reward=max_episodic_reward,
                     buffer_size=metric_buf_size,
                     example_time_step=example_time_step
                 ))
 
         self._gamma = gamma
+        self._v = v
         self._epsilon_greedy = config.epsilon_greedy
         self._config = config
     
@@ -122,11 +125,22 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
     
 
     def rollout_step(self, inputs: TimeStep, state: SeedTDState):
-        
         value, _ = self._network(inputs.observation)
         
         action = torch.argmax(value, dim=-1)
         action = torch.diagonal(action, 0)
+
+        
+        is_last = (inputs.step_type == StepType.LAST)
+
+        if True in is_last:
+            is_last = (is_last==True).nonzero()
+            for i in range(len(is_last)):
+                agent_index = is_last[i].item()
+                new_noise = torch.normal(0, self._v, (self._max_noise_buf_length, self._config.num_parallel_agents, 1))
+                self._noise[:, :, agent_index] = new_noise.squeeze()
+                # new_noise = torch.normal(0, self._v, (self._max_noise_buf_length, 1, self._config.num_parallel_agents))
+                # self._noise[:, agent_index, :] = new_noise.squeeze()
 
         self._noise_index = self._noise_index % self._max_noise_buf_length
 
@@ -148,9 +162,9 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
         action = torch.argmax(new_value, dim=-1)
         action = action.to(torch.int64)
 
+        ##is gather done with rollout_info.action?
         new_value = new_value.gather(2, action.unsqueeze(2))
         new_value = torch.squeeze(new_value)
-
         ### [152, 10, 1]
         return AlgStep(output=action,
                        state=SeedTDState(),
@@ -183,7 +197,6 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
             loss = loss.sum(dim=-1)
 
         """info.value, returns after extending, and loss should be the same shape"""
-
         if self._debug_summaries:
             with alf.summary.scope(self._name):
                 alf.summary.scalar("reward", torch.mean(info.reward))
