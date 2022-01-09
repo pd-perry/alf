@@ -1,6 +1,5 @@
-from pdb import set_trace
+from torch._C import Value
 from alf.algorithms.config import TrainerConfig
-from alf.algorithms.multiagent_one_step_loss import MultiAgentOneStepTDLoss
 from alf.algorithms.one_step_loss import OneStepTDLoss
 from alf.networks.q_networks import QNetwork
 from alf.networks.value_networks import ValueNetwork
@@ -25,7 +24,7 @@ SeedTDState = namedtuple("TState", ["prev_obs"], default_value=())
 
 
 @alf.configurable
-class SeedTDAlgorithm(OffPolicyAlgorithm):
+class TD(OffPolicyAlgorithm):
     def __init__(self,
                  observation_spec=TensorSpec(()),
                  action_spec=TensorSpec(()),
@@ -33,13 +32,13 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
                  q_network_cls=QNetwork,
                  v=0.01,
                  gamma=0.99,
-                 max_noise_buf_length=1000,
-                 max_episodic_reward=100,
+                 epsilon_greedy=0.9,
+                 max_episodic_reward=0,
                  env=None,
                  optimizer=None,
                  config: TrainerConfig = None,
                  debug_summaries=True,
-                 name="SeedTDAlgorithm"):
+                 name="TD"):
         """
         Args:
             observation_spec (nested TensorSpec): representing the observations.
@@ -86,10 +85,7 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
 
         self.num_actions = action_spec.maximum - action_spec.minimum + 1
         q_network_cls = QNetwork(input_tensor_spec=observation_spec, action_spec=action_spec)
-        self._network = q_network_cls.make_parallel(config.num_parallel_agents)
-        self._noise = torch.normal(0, v, (max_noise_buf_length, config.num_parallel_agents, config.num_parallel_agents))
-        self._noise_index = 0
-        self._max_noise_buf_length = max_noise_buf_length
+        self._network = q_network_cls
         
         if env is not None:
             metric_buf_size = max(self._config.metric_min_buffer_size,
@@ -103,7 +99,7 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
 
         self._gamma = gamma
         self._v = v
-        self._epsilon_greedy = config.epsilon_greedy
+        self._epsilon_greedy = epsilon_greedy
         self._config = config
     
     def predict_step(self, info, state: SeedTDState):
@@ -130,90 +126,65 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
     def rollout_step(self, inputs: TimeStep, state: SeedTDState):
         value, _ = self._network(inputs.observation)
         
-        action = torch.argmax(value, dim=-1)
-        action = torch.diagonal(action, 0)
-        
-        is_last = (inputs.step_type == StepType.LAST)
+        e = random.randint(0, 100)
+        if e > self._epsilon_greedy*100:
+            action = torch.argmax(value, dim=-1)
+        else:
+            action = torch.tensor([random.randint(
+                self._action_spec.minimum, self._action_spec.maximum) for i in range(inputs.observation.shape[0])])
 
-        if True in is_last:
-            is_last = (is_last==True).nonzero()
-            for i in range(len(is_last)):
-                agent_index = is_last[i].item()
-                new_noise = torch.normal(0, self._v, (self._max_noise_buf_length, self._config.num_parallel_agents, 1))
-                self._noise[:, :, agent_index] = new_noise.squeeze()
-                # new_noise = torch.normal(0, self._v, (self._max_noise_buf_length, 1, self._config.num_parallel_agents))
-                # self._noise[:, agent_index, :] = new_noise.squeeze()
+        # action = action.to(torch.int64)
 
-        self._noise_index = self._noise_index % self._max_noise_buf_length
-
-        noise = self._noise[self._noise_index, :, :]
-        self._noise_index = self._noise_index + 1
+        # ##is gather done with rollout_info.action?
+        # value = value.gather(dim=-1, index=action.unsqueeze(1))
+        # value = torch.squeeze(value)
 
         return AlgStep(output=action,
                        state=state,
                        info=SeedTDInfo(action=action,
                                   reward=inputs.reward,
                                   step_type=inputs.step_type,
-                                  discount=inputs.discount,
-                                  noise=noise))
+                                  discount=inputs.discount))
 
     def train_step(self, inputs: TimeStep, state, rollout_info: SeedTDInfo):
+
         target_value, _ = self._network(inputs.observation)
-        ##subtracted
-        ##action in inputs
-        ##to the right
         action = torch.argmax(target_value, dim=-1)
         action = action.to(torch.int64)
 
-        target_value = target_value.gather(2, action.unsqueeze(2))
+        ##is gather done with rollout_info.action?
+        target_value = target_value.gather(dim=-1, index=action.unsqueeze(1))
         target_value = torch.squeeze(target_value)
-        ##^Target
 
         value, _ = self._network(inputs.observation)
-        rollout_action = rollout_info.action.repeat([value.shape[1], 1])
-        rollout_action = rollout_action.transpose(0, 1)
-        value = value.gather(dim=-1, index=rollout_action.unsqueeze(2))
-        value = torch.squeeze(value)
+        value = value.gather(dim=-1, index=rollout_info.action.unsqueeze(1))
 
-        ### [152, 10, 1]
         return AlgStep(output=action,
                        state=SeedTDState(),
                        info=SeedTDInfo(discount=inputs.discount,
                                   step_type=inputs.step_type,
                                   action=action,
                                   reward=inputs.reward,
-                                  value=value,
                                   target_value=target_value,
-                                  noise=rollout_info.noise))
+                                  value=value))
 
     def calc_loss(self, info: SeedTDInfo):
-        loss_fn = MultiAgentOneStepTDLoss(gamma=self._gamma, debug_summaries=True)
 
-        gaussian_noise = info.noise
-        if self._config.num_parallel_agents == 1:
-            returns = value_ops.one_step_discounted_return(
-            info.reward, info.new_value, info.step_type, info.discount * self._gamma)
-            returns = tensor_utils.tensor_extend(returns, info.new_value[-1])
-            returns = returns + gaussian_noise
-            loss = element_wise_squared_loss(returns, torch.squeeze(info.value))
-        else:
-            # value = torch.reshape(info.new_value, (info.new_value.shape[0], info.new_value.shape[1], -1))
+        loss_fn = OneStepTDLoss(gamma=self._gamma, debug_summaries=True)
+        loss = loss_fn(info=info, value=torch.squeeze(info.value), target_value=info.target_value)
 
-            # returns = torch.zeros((info.new_value.shape))
-            # for n in range(info.value.shape[2]):
-            #     returns_n = value_ops.one_step_discounted_return(info.reward, value[:, :, n], info.step_type, info.discount * self._gamma)
-            #     returns_n = tensor_utils.tensor_extend(returns_n, info.new_value[-1, :, n])
-            #     returns[:, :, n] = returns_n
-
-            # returns = returns + gaussian_noise
-            # loss = element_wise_squared_loss(returns, info.new_value)
-            # loss = loss.sum(dim=-1)
-
-            loss = loss_fn(info, value=info.value, target_value=info.target_value, noise=gaussian_noise)            
-
+        # returns = value_ops.one_step_discounted_return(
+        # info.reward, info.target_value, info.step_type, info.discount * self._gamma)
+        # returns = tensor_utils.tensor_extend(returns, info.target_value[-1])
+        # # loss = element_wise_squared_loss(returns, torch.squeeze(info.value))
+        # loss1 = element_wise_squared_loss(returns, torch.squeeze(info.value))
+        
         """info.value, returns after extending, and loss should be the same shape"""
         if self._debug_summaries:
             with alf.summary.scope(self._name):
                 alf.summary.scalar("reward", torch.mean(info.reward))
 
         return LossInfo(loss=loss.loss)
+    
+
+    
