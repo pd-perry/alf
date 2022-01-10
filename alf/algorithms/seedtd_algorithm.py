@@ -2,6 +2,7 @@ from pdb import set_trace
 from alf.algorithms.config import TrainerConfig
 from alf.algorithms.multiagent_one_step_loss import MultiAgentOneStepTDLoss
 from alf.algorithms.one_step_loss import OneStepTDLoss
+from alf.nest import nest
 from alf.networks.q_networks import QNetwork
 from alf.networks.value_networks import ValueNetwork
 from alf.tensor_specs import TensorSpec
@@ -15,7 +16,7 @@ import alf
 from alf.algorithms.off_policy_algorithm import OffPolicyAlgorithm
 from alf.networks.relu_mlp import ReluMLP
 from alf.data_structures import AlgStep, LossInfo, namedtuple, StepType, TimeStep
-from alf.utils import value_ops, tensor_utils
+from alf.utils import common, value_ops, tensor_utils
 from alf.utils.losses import element_wise_squared_loss
 
 SeedTDInfo = namedtuple("TInfo", ["target_value", "action", "reward", "value",
@@ -35,6 +36,8 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
                  gamma=0.99,
                  max_noise_buf_length=1000,
                  max_episodic_reward=100,
+                 target_update_tau=0.05,
+                 target_update_period=1,
                  env=None,
                  optimizer=None,
                  config: TrainerConfig = None,
@@ -60,6 +63,10 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
                 is the case, the extra noise terms will not be used. 
             max_episodic_reward (int): the maximum reward each episode. Used to calculate
                 the cumulated training regret. 
+            target_update_tau (float): Factor for soft update of the target
+                networks.
+            target_update_period (int): Period for soft update of the target
+                networks.
             env (Environment): The environment to interact with. ``env`` is a
                 batched environment, which means that it runs multiple simulations
                 simultateously. ``env` only needs to be provided to the root
@@ -87,6 +94,8 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
         self.num_actions = action_spec.maximum - action_spec.minimum + 1
         q_network_cls = QNetwork(input_tensor_spec=observation_spec, action_spec=action_spec)
         self._network = q_network_cls.make_parallel(config.num_parallel_agents)
+        self._target_network = self._network.copy(
+            name='target_networks')
         self._noise = torch.normal(0, v, (max_noise_buf_length, config.num_parallel_agents, config.num_parallel_agents))
         self._noise_index = 0
         self._max_noise_buf_length = max_noise_buf_length
@@ -105,6 +114,13 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
         self._v = v
         self._epsilon_greedy = config.epsilon_greedy
         self._config = config
+
+        self._update_target = common.get_target_updater(
+            models=[self._network],
+            target_models=[self._target_network],
+            tau=target_update_tau,
+            period=target_update_period)
+
     
     def predict_step(self, info, state: SeedTDState):
         value, _ = self._network(info.observation)
@@ -129,6 +145,7 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
 
     def rollout_step(self, inputs: TimeStep, state: SeedTDState):
         value, _ = self._network(inputs.observation)
+
         
         action = torch.argmax(value, dim=-1)
         action = torch.diagonal(action, 0)
@@ -158,7 +175,7 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
                                   noise=noise))
 
     def train_step(self, inputs: TimeStep, state, rollout_info: SeedTDInfo):
-        target_value, _ = self._network(inputs.observation)
+        target_value, _ = self._target_network(inputs.observation)
         ##subtracted
         ##action in inputs
         ##to the right
@@ -175,6 +192,8 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
         value = value.gather(dim=-1, index=rollout_action.unsqueeze(2))
         value = torch.squeeze(value)
 
+        import pdb; pdb.set_trace()
+
         ### [152, 10, 1]
         return AlgStep(output=action,
                        state=SeedTDState(),
@@ -185,6 +204,13 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
                                   value=value,
                                   target_value=target_value,
                                   noise=rollout_info.noise))
+    
+    def after_update(self, root_inputs, info: SeedTDInfo):
+        self._update_target()
+        # if self._max_log_alpha is not None:
+        #     nest.map_structure(
+        #         lambda la: la.data.copy_(torch.min(la, self._max_log_alpha)),
+        #         self._log_alpha)
 
     def calc_loss(self, info: SeedTDInfo):
         loss_fn = MultiAgentOneStepTDLoss(gamma=self._gamma, debug_summaries=True)
@@ -217,3 +243,6 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
                 alf.summary.scalar("reward", torch.mean(info.reward))
 
         return LossInfo(loss=loss.loss)
+    
+    def _trainable_attributes_to_ignore(self):
+        return ['_target_network']
