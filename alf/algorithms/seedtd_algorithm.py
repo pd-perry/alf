@@ -129,6 +129,26 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
         if self._config.num_parallel_agents > 1:
             action = action[:, 0]
         
+
+        # import alf.summary.render as render
+
+        # action_dist, action = self._predict_action(info.observation)
+
+        # with alf.summary.scope("/record"):
+        #     action_img = render.render_action(
+        #         name="action", action=action, action_spec=self._action_spec)
+        #     action_heatmap = render.render_heatmap(
+        #         name="action_heatmap", data=action, val_label="action")
+        #     act_dist_curve = render.render_action_distribution(
+        #         name="action_dist", act_dist=action_dist, action_spec=self._action_spec)
+
+        #     return AlgStep(
+        #         output=action,
+        #         info=dict(
+        #             action_img=action_img,
+        #             action_heatmap=action_heatmap,
+        #             action_dist_curve=act_dist_curve))
+        
         return AlgStep(output=action,
                        state=state,
                        info=SeedTDInfo(action=action))
@@ -145,7 +165,6 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
 
     def rollout_step(self, inputs: TimeStep, state: SeedTDState):
         value, _ = self._network(inputs.observation)
-
         
         action = torch.argmax(value, dim=-1)
         action = torch.diagonal(action, 0)
@@ -158,8 +177,6 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
                 agent_index = is_last[i].item()
                 new_noise = torch.normal(0, self._v, (self._max_noise_buf_length, self._config.num_parallel_agents, 1))
                 self._noise[:, :, agent_index] = new_noise.squeeze()
-                # new_noise = torch.normal(0, self._v, (self._max_noise_buf_length, 1, self._config.num_parallel_agents))
-                # self._noise[:, agent_index, :] = new_noise.squeeze()
 
         self._noise_index = self._noise_index % self._max_noise_buf_length
 
@@ -191,8 +208,6 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
         rollout_action = rollout_action.transpose(0, 1)
         value = value.gather(dim=-1, index=rollout_action.unsqueeze(2))
         value = torch.squeeze(value)
-
-        import pdb; pdb.set_trace()
 
         ### [152, 10, 1]
         return AlgStep(output=action,

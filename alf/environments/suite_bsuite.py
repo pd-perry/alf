@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import alf
+from alf import environments
 from alf.environments import gym_wrappers, alf_wrappers, alf_gym_wrapper
 from alf.environments.suite_gym import wrap_env
 
@@ -22,8 +23,7 @@ from bsuite.utils import gym_wrapper
 from gym import spaces
 from dm_env import specs
 import numpy as np
-from typing import Any, Dict, Tuple
-
+from typing import Any, Dict, Optional, Tuple, Union
 
 def is_available():
     return bsuite is not None
@@ -114,12 +114,30 @@ class BSuiteWrapper(gym_wrapper.GymFromDMEnv):
     def step(self, action: int) -> _GymTimestep:
         timestep = self._env.step(action)
         self._last_observation = timestep.observation
-        reward = timestep.reward or 0.
+        reward = np.maximum(timestep.reward, np.zeros_like(timestep.reward)) or 0.
         if timestep.last():
             self.game_over = True
         return np.reshape(
             timestep.observation,
             (timestep.observation.shape[1], )), reward, timestep.last(), {}
+
+    
+    def render(self, mode: str = 'rgb_array') -> Union[np.ndarray, bool]:
+        if self._last_observation is None:
+            raise ValueError('Environment not ready to render. Call reset() first.')
+
+        if mode == 'rgb_array':
+            return self._last_observation
+
+        if mode == 'human':
+            if self.viewer is None:
+                # pylint: disable=import-outside-toplevel
+                # pylint: disable=g-import-not-at-top
+                from gym.envs.classic_control import rendering
+                self.viewer = rendering.SimpleImageViewer()
+            import pdb; pdb.set_trace()
+            self.viewer.imshow(self._last_observation)
+            return self.viewer.isopen
 
     def reset(self) -> np.ndarray:
         self.game_over = False
