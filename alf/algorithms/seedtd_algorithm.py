@@ -81,8 +81,9 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
             name (str): The name of this algorithm.
         """
         if bootstrap:
-            bootstrap_index = np.random.randint(0, self._max_length - 1, size=(self._num_envs, self._max_length))
+            bootstrap_index = np.random.randint(0, config.replay_buffer_length - 1, size=(config.num_parallel_agents, config.replay_buffer_length))
             bootstrap_index = torch.from_numpy(bootstrap_index)
+            bootstrap_index = torch.sort(bootstrap_index, dim=-1).values
         else:
             bootstrap_index = None
 

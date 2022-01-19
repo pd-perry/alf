@@ -410,9 +410,6 @@ class ReplayBuffer(RingBuffer):
             env_ids = info.env_ids
 
             idx = start_pos.reshape(-1, 1)  # [B, 1]
-            ## start_pos can be larger than the current number of elements in the buffer
-            ## so idx is modded by the current size
-            idx = idx % self._current_size[0]
             idx = self.circular(
                 idx + torch.arange(batch_length).unsqueeze(0))  # [B, T]
             out_env_ids = env_ids.reshape(-1, 1).expand(
@@ -535,10 +532,11 @@ class ReplayBuffer(RingBuffer):
         if sample_from_recent_n_data_steps is not None:
             num_positions = torch.clamp(
                 num_positions, max=sample_from_recent_n_data_steps)
-        pos = (r * num_positions[env_ids]).to(torch.int64)
-        ###TODO: determine whether to collect indices based on position and then mod or
-        ###      only select from the indices in index that is less than current size.
-        pos = index.gather(dim=1, index=pos.unsqueeze(dim=0)).squeeze()
+        
+        ##num_index is the number of elements in the index of each agent less than current size
+        num_index = (index <= self._current_size[0] - d).sum(dim=1)
+        pos = (r * num_index[env_ids]).to(torch.int64)
+        pos = index.gather(dim=1, index=pos.unsqueeze(dim=1)).squeeze()
         pos += (self._current_pos - num_positions - batch_length + 1)[env_ids]
         info = BatchInfo(env_ids=env_ids, positions=pos)
         return info
