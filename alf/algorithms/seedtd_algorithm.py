@@ -214,8 +214,10 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
         ##^Target
 
         value, _ = self._network(inputs.observation)
+        import pdb; pdb.set_trace()
         rollout_action = rollout_info.action.repeat([value.shape[1], 1])
         rollout_action = rollout_action.transpose(0, 1)
+        import pdb; pdb.set_trace()
         value = value.gather(dim=-1, index=rollout_action.unsqueeze(2))
         value = torch.squeeze(value)
 

@@ -96,7 +96,8 @@ class MultiAgentOneStepTDLoss(TDLoss):
                         _summarize(value[..., i], returns[..., i], td[..., i],
                                    suffix)
         
-        returns = returns + noise[:-1, :, :]
+        if noise != None:
+            returns = returns + noise[:-1, :, :]
         loss = self._td_error_loss_fn(returns.detach(), value)
         loss = torch.squeeze(loss.sum(dim=-1))
 

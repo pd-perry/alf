@@ -138,6 +138,7 @@ class TD(OffPolicyAlgorithm):
         e = random.randint(0, 100)
         if e > self._epsilon_greedy*100:
             action = torch.argmax(value, dim=-1)
+            action = torch.diagonal(action, 0)
         else:
             action = torch.tensor([random.randint(
                 self._action_spec.minimum, self._action_spec.maximum) for i in range(inputs.observation.shape[0])])
@@ -162,11 +163,14 @@ class TD(OffPolicyAlgorithm):
         action = action.to(torch.int64)
 
         ##is gather done with rollout_info.action?
-        target_value = target_value.gather(dim=-1, index=action.unsqueeze(1))
+        target_value = target_value.gather(dim=-1, index=action.unsqueeze(2))
         target_value = torch.squeeze(target_value)
 
         value, _ = self._network(inputs.observation)
-        value = value.gather(dim=-1, index=rollout_info.action.unsqueeze(1))
+        rollout_action = rollout_info.action.repeat([value.shape[1], 1])
+        rollout_action = rollout_action.transpose(0, 1)
+        value = value.gather(dim=-1, index=rollout_action.unsqueeze(2))
+        value = torch.squeeze(value)
 
         return AlgStep(output=action,
                        state=SeedTDState(),
