@@ -1,5 +1,6 @@
 from torch._C import Value
 from alf.algorithms.config import TrainerConfig
+from alf.algorithms.multiagent_one_step_loss import MultiAgentOneStepTDLoss
 from alf.algorithms.one_step_loss import OneStepTDLoss
 from alf.networks.q_networks import QNetwork
 from alf.networks.value_networks import ValueNetwork
@@ -34,6 +35,7 @@ class TD(OffPolicyAlgorithm):
                  gamma=0.99,
                  epsilon_greedy=0.9,
                  max_episodic_reward=0,
+                 bootstrap=False,
                  env=None,
                  optimizer=None,
                  config: TrainerConfig = None,
@@ -70,11 +72,18 @@ class TD(OffPolicyAlgorithm):
             debug_summaries (bool): True if debug summaries should be created.
             name (str): The name of this algorithm.
         """
+        if bootstrap:
+            bootstrap_index = np.random.randint(0, config.replay_buffer_length - 1, size=(config.num_parallel_agents, config.replay_buffer_length))
+            bootstrap_index = torch.from_numpy(bootstrap_index)
+            bootstrap_index = torch.sort(bootstrap_index, dim=-1).values
+        else:
+            bootstrap_index = None
         super().__init__(observation_spec=observation_spec,
                          action_spec=action_spec,
                          train_state_spec=SeedTDState(),
                          reward_spec=reward_spec,
                          env=env,
+                         bootstrap_index=bootstrap_index,
                          optimizer=optimizer,
                          config=config,
                          debug_summaries=debug_summaries,
@@ -85,7 +94,7 @@ class TD(OffPolicyAlgorithm):
 
         self.num_actions = action_spec.maximum - action_spec.minimum + 1
         q_network_cls = QNetwork(input_tensor_spec=observation_spec, action_spec=action_spec)
-        self._network = q_network_cls
+        self._network = q_network_cls.make_parallel(config.num_parallel_agents)
         
         if env is not None:
             metric_buf_size = max(self._config.metric_min_buffer_size,
@@ -105,7 +114,7 @@ class TD(OffPolicyAlgorithm):
     def predict_step(self, info, state: SeedTDState):
         value, _ = self._network(info.observation)
         action = torch.argmax(value, dim=-1)
-        
+
         if self._config.num_parallel_agents > 1:
             action = action[:, 0]
         
@@ -170,8 +179,13 @@ class TD(OffPolicyAlgorithm):
 
     def calc_loss(self, info: SeedTDInfo):
 
-        loss_fn = OneStepTDLoss(gamma=self._gamma, debug_summaries=True)
-        loss = loss_fn(info=info, value=torch.squeeze(info.value), target_value=info.target_value)
+        if self._config.num_parallel_agents > 1: 
+            loss_fn = MultiAgentOneStepTDLoss(gamma=self._gamma, debug_summaries=True)
+            loss = loss_fn(info, value=info.value, target_value=info.target_value, noise=None)            
+        else:
+            loss_fn = OneStepTDLoss(gamma=self._gamma, debug_summaries=True)
+            loss = loss_fn(info=info, value=torch.squeeze(info.value), target_value=info.target_value)
+
 
         # returns = value_ops.one_step_discounted_return(
         # info.reward, info.target_value, info.step_type, info.discount * self._gamma)
