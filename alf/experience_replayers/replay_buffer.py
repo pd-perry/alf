@@ -17,6 +17,7 @@ from absl import logging
 import math
 import numpy as np
 import torch
+from torch import tensor
 import torch.nn as nn
 
 import alf
@@ -492,10 +493,17 @@ class ReplayBuffer(RingBuffer):
             ##num_index is the number of elements in the index of each agent less than current size
             num_index = (index <= self._current_size[0] - d).sum(dim=1)
             pos = (r * num_index[env_ids]).to(torch.int64)
-            pos = index.gather(dim=1, index=pos.unsqueeze(dim=1)).squeeze()
+            if batch_size_per_env > 1:
+                pos = torch.reshape(pos, (-1, index.shape[0]))
+                store = torch.zeros(pos.shape)
+                for i in range(pos.shape[0]):
+                    store[i, :] = index.gather(dim=1, index=pos[i, :].unsqueeze(dim=1)).squeeze()
+                pos = store.reshape(env_ids.shape)
+            else:
+                pos = index.gather(dim=1, index=pos.unsqueeze(dim=1)).squeeze()
             pos += (self._current_pos - num_positions - batch_length + 1)[env_ids]
+            pos = pos.type(torch.LongTensor)
         else:
-
             pos = (r * num_positions[env_ids]).to(torch.int64)
             pos += (self._current_pos - num_positions - batch_length + 1)[env_ids]
         info = BatchInfo(env_ids=env_ids, positions=pos)
