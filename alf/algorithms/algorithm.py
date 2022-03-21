@@ -66,6 +66,7 @@ class Algorithm(AlgorithmInterface):
                  rollout_state_spec=None,
                  predict_state_spec=None,
                  is_on_policy=None,
+                 bootstrap_index=None,
                  optimizer=None,
                  config: TrainerConfig = None,
                  debug_summaries=False,
@@ -91,6 +92,10 @@ class Algorithm(AlgorithmInterface):
                 ``predict_step()``. If None, it's assume to be same as
                 ``rollout_state_spec``.
             is_on_policy (None|bool):
+            bootstrap_index (None|Tensor): indicates whether the algorithm runs
+                the bootstrap procedure. If tensor, the shape will be 
+                (num_envs, max_buffer_length) of elements between 0 and
+                max_buffer_length - 1, inclusive. 
             optimizer (None|Optimizer): The default optimizer for
                 training. See comments above for detail.
             config (TrainerConfig): config for training. ``config`` only needs to
@@ -155,6 +160,8 @@ class Algorithm(AlgorithmInterface):
                 self._grad_scaler = torch.cuda.amp.GradScaler()
 
         self._is_rnn = len(alf.nest.flatten(train_state_spec)) > 0
+
+        self._bootstrap_index = bootstrap_index
 
         self._debug_summaries = debug_summaries
         self._default_optimizer = optimizer
@@ -1409,6 +1416,7 @@ class Algorithm(AlgorithmInterface):
                 offline_experience, offline_batch_info = self._offline_replay_buffer.get_batch(
                     batch_size=(
                         mini_batch_size * config.num_updates_per_train_iter),
+<<<<<<< HEAD
                     batch_length=config.mini_batch_length)
             # train hybrid
             with record_time("time/offline_train"):
@@ -1418,6 +1426,23 @@ class Algorithm(AlgorithmInterface):
                     config.mini_batch_length,
                     (config.update_counter_every_mini_batch
                      and update_global_counter))
+=======
+                    batch_length=config.mini_batch_length,
+                    index=self._bootstrap_index)
+                num_updates = 1
+
+        with record_time("time/train"):
+            return self._train_experience(
+                experience,
+                batch_info,
+                num_updates,
+                mini_batch_size,
+                config.mini_batch_length,
+                (config.update_counter_every_mini_batch
+                 and update_global_counter),
+                whole_replay_buffer_training=config.
+                whole_replay_buffer_training)
+>>>>>>> 37daa40... implemented base bootstrap procedure
 
     def _train_experience(self,
                           experience,

@@ -114,7 +114,8 @@ class BSuiteWrapper(gym_wrapper.GymFromDMEnv):
     def step(self, action: int) -> _GymTimestep:
         timestep = self._env.step(action)
         self._last_observation = timestep.observation
-        reward = np.maximum(timestep.reward, np.zeros_like(timestep.reward)) or 0.
+        # reward = np.maximum(timestep.reward, np.zeros_like(timestep.reward)) or 0.
+        reward = timestep.reward or 0
         if timestep.last():
             self.game_over = True
         return np.reshape(

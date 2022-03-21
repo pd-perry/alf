@@ -38,6 +38,7 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
                  max_episodic_reward=100,
                  target_update_tau=0.05,
                  target_update_period=1,
+                 bootstrap=False,
                  env=None,
                  optimizer=None,
                  config: TrainerConfig = None,
@@ -67,6 +68,7 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
                 networks.
             target_update_period (int): Period for soft update of the target
                 networks.
+            bootstrap (bool): determines whether to use the bootstrap procedure.
             env (Environment): The environment to interact with. ``env`` is a
                 batched environment, which means that it runs multiple simulations
                 simultateously. ``env` only needs to be provided to the root
@@ -78,11 +80,18 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
             debug_summaries (bool): True if debug summaries should be created.
             name (str): The name of this algorithm.
         """
+        if bootstrap:
+            bootstrap_index = np.random.randint(0, self._max_length - 1, size=(self._num_envs, self._max_length))
+            bootstrap_index = torch.from_numpy(bootstrap_index)
+        else:
+            bootstrap_index = None
+
         super().__init__(observation_spec=observation_spec,
                          action_spec=action_spec,
                          train_state_spec=SeedTDState(),
                          reward_spec=reward_spec,
                          env=env,
+                         bootstrap_index=bootstrap_index,
                          optimizer=optimizer,
                          config=config,
                          debug_summaries=debug_summaries,

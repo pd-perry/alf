@@ -358,7 +358,7 @@ class ReplayBuffer(RingBuffer):
 
     @atomic
     @torch.no_grad()
-    def get_batch(self, batch_size, batch_length):
+    def get_batch(self, batch_size, batch_length, index=None):
         """Randomly get ``batch_size`` trajectories from the buffer.
 
         Note: The environments where the samples are from are ordered in the
@@ -367,6 +367,7 @@ class ReplayBuffer(RingBuffer):
         Args:
             batch_size (int): get so many trajectories
             batch_length (int): the length of each trajectory
+            index (None|Tensor): the index for bootstrap if applied.
         Returns:
             tuple:
                 - nested Tensors: The samples. Its shapes are [batch_size, batch_length, ...]
@@ -395,7 +396,7 @@ class ReplayBuffer(RingBuffer):
                 info = self._prioritized_sample(normal_batch_size,
                                                 batch_length)
             else:
-                info = self._uniform_sample(normal_batch_size, batch_length)
+                info = self._uniform_sample(normal_batch_size, batch_length, index)
 
             if recent_batch_size > 0:
                 # Note that _uniform_sample() get samples duplicated with those
@@ -409,6 +410,9 @@ class ReplayBuffer(RingBuffer):
             env_ids = info.env_ids
 
             idx = start_pos.reshape(-1, 1)  # [B, 1]
+            ## start_pos can be larger than the current number of elements in the buffer
+            ## so idx is modded by the current size
+            idx = idx % self._current_size[0]
             idx = self.circular(
                 idx + torch.arange(batch_length).unsqueeze(0))  # [B, T]
             out_env_ids = env_ids.reshape(-1, 1).expand(
@@ -420,6 +424,7 @@ class ReplayBuffer(RingBuffer):
                 alf.summary.scalar(
                     "replayer/" + self._name + ".original_reward_mean",
                     torch.mean(result.reward[:-1]))
+            
 
         if self._keep_episodic_info and self._record_episodic_return:
             # info elements have shape [B], and needs to be device-converted.
@@ -434,18 +439,69 @@ class ReplayBuffer(RingBuffer):
     def _recent_sample(self, batch_size, batch_length):
         return self._sample(batch_size, batch_length, self._recent_data_steps)
 
-    def _uniform_sample(self, batch_size, batch_length):
+    def _uniform_sample(self, batch_size, batch_length, index=None):
         min_size = self._current_size.min() - self._num_earliest_frames_ignored
         assert min_size >= batch_length, (
             "Not all environments have enough data. The smallest data "
             "size is: %s Try storing more data before calling get_batch" %
             min_size)
-        return self._sample(batch_size, batch_length)
+        
+        ## if index is passed in then calls self._sample_bootstrap instead of _sample
+        if index is None:
+            return self._sample(batch_size, batch_length)
+        else: 
+            return self._sample_bootstrap(batch_size, batch_length, index)
 
     def _sample(self,
                 batch_size,
                 batch_length,
                 sample_from_recent_n_data_steps=None):
+        batch_size_per_env = batch_size // self._num_envs
+        remaining = batch_size % self._num_envs
+        env_ids = torch.arange(self._num_envs).repeat(batch_size_per_env)
+        if remaining > 0:
+            remaining_eids = torch.randperm(self._num_envs)[:remaining]
+            env_ids = torch.cat([env_ids, remaining_eids], dim=0)
+        
+        r = torch.rand(*env_ids.shape)
+        if not self._with_replacement:
+            # For sampling without replacement,  we want r's for the same env to
+            # be roughly evenly spaced.
+            num_samples_per_env = batch_size_per_env * torch.ones(
+                (self._num_envs, ), dtype=torch.int64)
+            # Each i means that the corresponding sample is the i-th sample from
+            # that environment.
+            i = torch.arange(batch_size_per_env).unsqueeze(-1).expand(
+                -1, self._num_envs).reshape(-1)
+            if remaining > 0:
+                num_samples_per_env[remaining_eids] += 1
+                remaining_i = batch_size_per_env * torch.ones(
+                    (remaining, ), dtype=torch.int64)
+                i = torch.cat([i, remaining_i])
+
+            r = (i + r) / num_samples_per_env[env_ids]
+            # Because of limited floating point precision (e.g. (3 + ONE_MINUS) / 4 == 1.0),
+            # we need to make sure r is smaller than 1.
+            r = torch.clamp(r, max=self.ONE_MINUS)
+
+        d = batch_length - 1 + self._num_earliest_frames_ignored
+        num_positions = self._current_size - d
+        if sample_from_recent_n_data_steps is not None:
+            num_positions = torch.clamp(
+                num_positions, max=sample_from_recent_n_data_steps)
+        pos = (r * num_positions[env_ids]).to(torch.int64)
+        pos += (self._current_pos - num_positions - batch_length + 1)[env_ids]
+        info = BatchInfo(env_ids=env_ids, positions=pos)
+        return info
+    
+    def _sample_bootstrap(self,
+                batch_size,
+                batch_length,
+                index,
+                sample_from_recent_n_data_steps=None):
+        """
+        index will be shaped [config.num_parallel_agents, config.replay_buffer_length]
+        """
         batch_size_per_env = batch_size // self._num_envs
         remaining = batch_size % self._num_envs
         env_ids = torch.arange(self._num_envs).repeat(batch_size_per_env)
@@ -480,6 +536,9 @@ class ReplayBuffer(RingBuffer):
             num_positions = torch.clamp(
                 num_positions, max=sample_from_recent_n_data_steps)
         pos = (r * num_positions[env_ids]).to(torch.int64)
+        ###TODO: determine whether to collect indices based on position and then mod or
+        ###      only select from the indices in index that is less than current size.
+        pos = index.gather(dim=1, index=pos.unsqueeze(dim=0)).squeeze()
         pos += (self._current_pos - num_positions - batch_length + 1)[env_ids]
         info = BatchInfo(env_ids=env_ids, positions=pos)
         return info

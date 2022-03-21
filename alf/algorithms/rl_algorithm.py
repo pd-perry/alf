@@ -138,6 +138,7 @@ class RLAlgorithm(Algorithm):
                  rollout_state_spec=None,
                  is_on_policy=None,
                  reward_weights=None,
+                 bootstrap_index=None,
                  env=None,
                  config: TrainerConfig = None,
                  optimizer=None,
@@ -162,6 +163,10 @@ class RLAlgorithm(Algorithm):
             reward_weights (None|list[float]): this is only used when the reward is
                 multidimensional. If not None, the weighted sum of rewards is
                 the reward for training. Otherwise, the sum of rewards is used.
+            bootstrap_index (None|Tensor): indicates whether the algorithm runs
+                the bootstrap procedure. If tensor, the shape will be 
+                (num_envs, max_buffer_length) of elements between 0 and
+                max_buffer_length - 1, inclusive. 
             env (Environment): The environment to interact with. ``env`` is a
                 batched environment, which means that it runs multiple
                 simulations simultaneously. Running multiple environments in
@@ -183,6 +188,7 @@ class RLAlgorithm(Algorithm):
             rollout_state_spec=rollout_state_spec,
             predict_state_spec=predict_state_spec,
             is_on_policy=is_on_policy,
+            bootstrap_index=bootstrap_index,
             optimizer=optimizer,
             config=config,
             debug_summaries=debug_summaries,
