@@ -33,7 +33,7 @@ class TD(OffPolicyAlgorithm):
                  q_network_cls=QNetwork,
                  v=0.01,
                  gamma=0.99,
-                 epsilon_greedy=0.9,
+                 epsilon_greedy=0.1,
                  max_episodic_reward=0,
                  bootstrap=False,
                  env=None,
@@ -112,6 +112,9 @@ class TD(OffPolicyAlgorithm):
         self._config = config
     
     def predict_step(self, info, state: SeedTDState):
+        if self._config.num_parallel_agents == 1:
+            policy_step = self.rollout_step(info, state)
+            return policy_step._replace(info=())
         value, _ = self._network(info.observation)
         action = torch.argmax(value, dim=-1)
 
@@ -137,8 +140,12 @@ class TD(OffPolicyAlgorithm):
         
         e = random.randint(0, 100)
         if e > self._epsilon_greedy*100:
+            #single agent does not work
             action = torch.argmax(value, dim=-1)
-            action = torch.diagonal(action, 0)
+            if self._config.num_parallel_agents > 1:
+                action = torch.diagonal(action, 0)
+            else:
+                action = action.squeeze()
         else:
             action = torch.tensor([random.randint(
                 self._action_spec.minimum, self._action_spec.maximum) for i in range(inputs.observation.shape[0])])
