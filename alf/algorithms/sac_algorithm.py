@@ -256,6 +256,7 @@ class SacAlgorithm(OffPolicyAlgorithm):
                 in the beginning and different masks for actor and critic losses.
             name (str): The name of this algorithm.
         """
+        self._num_parallel_agents = config.num_parallel_agents
         self._num_critic_replicas = num_critic_replicas
         self._calculate_priority = calculate_priority
         if epsilon_greedy is None:
@@ -334,9 +335,14 @@ class SacAlgorithm(OffPolicyAlgorithm):
             critic_loss_ctor, debug_summaries=debug_summaries)
         # Have different names to separate their summary curves
         self._critic_losses = []
-        for i in range(num_critic_replicas):
-            self._critic_losses.append(
-                critic_loss_ctor(name="critic_loss%d" % (i + 1)))
+        if self._num_parallel_agents > 1:
+            for i in range(self._num_parallel_agents):
+                self._critic_losses.append(
+                    critic_loss_ctor(name="critic_loss%d" % (i + 1)))
+        else:
+            for i in range(num_critic_replicas):
+                self._critic_losses.append(
+                    critic_loss_ctor(name="critic_loss%d" % (i + 1)))
 
         self._prior_actor = None
         if prior_actor_ctor is not None:
@@ -421,6 +427,10 @@ class SacAlgorithm(OffPolicyAlgorithm):
             actor_network = continuous_actor_network_cls(
                 input_tensor_spec=observation_spec,
                 action_spec=continuous_action_spec)
+
+            #Check and make multiagent
+            if self._num_parallel_agents > 1:
+                actor_network = actor_network.make_parallel(self._num_parallel_agents)
             if not discrete_action_spec:
                 act_type = ActionType.Continuous
                 assert critic_network_cls is not None, (
@@ -429,7 +439,11 @@ class SacAlgorithm(OffPolicyAlgorithm):
                 critic_network = critic_network_cls(
                     input_tensor_spec=(observation_spec,
                                        continuous_action_spec))
-                critic_networks = _make_parallel(critic_network)
+                #Check and make multiagent
+                if self._num_parallel_agents > 1:
+                    critic_networks = critic_network.make_parallel(self._num_parallel_agents)
+                else:
+                    critic_networks = _make_parallel(critic_network)
 
         if discrete_action_spec:
             act_type = ActionType.Discrete
@@ -449,7 +463,10 @@ class SacAlgorithm(OffPolicyAlgorithm):
                 q_network = q_network_cls(
                     input_tensor_spec=observation_spec,
                     action_spec=action_spec)
-            critic_networks = _make_parallel(q_network)
+            if self._num_parallel_agents > 1:
+                critic_networks = q_network.make_parallel(self._num_parallel_agents)
+            else:
+                critic_networks = _make_parallel(q_network)
 
         return critic_networks, actor_network, act_type
 
@@ -484,7 +501,7 @@ class SacAlgorithm(OffPolicyAlgorithm):
         q_values = None
         if self._act_type != ActionType.Continuous:
             q_values, critic_state = self._compute_critics(
-                self._critic_networks, *critic_network_inputs, state.critic)
+                self._critic_networks, *critic_network_inputs, state.critic, rollout=rollout)
 
             new_state = new_state._replace(critic=critic_state)
             if self._act_type == ActionType.Discrete:
@@ -529,7 +546,6 @@ class SacAlgorithm(OffPolicyAlgorithm):
             action = alf.nest.map_structure(
                 lambda spec: spec.sample(outer_dims=observation.shape[:1]),
                 self._action_spec)
-
         return action_dist, action, q_values, new_state
 
     def predict_step(self, inputs: TimeStep, state: SacState):
@@ -593,7 +609,8 @@ class SacAlgorithm(OffPolicyAlgorithm):
                          action,
                          critics_state,
                          replica_min=True,
-                         apply_reward_weights=True):
+                         apply_reward_weights=True,
+                         rollout=False):
         if self._act_type == ActionType.Continuous:
             observation = (observation, action)
         elif self._act_type == ActionType.Mixed:
@@ -601,7 +618,6 @@ class SacAlgorithm(OffPolicyAlgorithm):
         # discrete/mixed: critics shape [B, replicas, num_actions]
         # continuous: critics shape [B, replicas]
         critics, critics_state = critic_net(observation, state=critics_state)
-
         # For multi-dim reward, do
         # continuous: [B, replicas * reward_dim] -> [B, replicas, reward_dim]
         # discrete: [B, replicas * reward_dim, num_actions]
@@ -618,14 +634,16 @@ class SacAlgorithm(OffPolicyAlgorithm):
                 order = [0, 1, -1] + list(
                     range(2, 2 + len(self._reward_spec.shape)))
                 critics = critics.permute(*order)
+        
+        if self._num_parallel_agents > 1 and rollout:
+            critics = critics.diagonal(0).transpose(0, 1)
 
-        if replica_min:
+        elif replica_min:
             if self.has_multidim_reward():
                 sign = self.reward_weights.sign()
                 critics = (critics * sign).min(dim=1)[0] * sign
             else:
                 critics = critics.min(dim=1)[0]
-
         if apply_reward_weights and self.has_multidim_reward():
             critics = self._apply_reward_weights(critics)
 
@@ -875,7 +893,6 @@ class SacAlgorithm(OffPolicyAlgorithm):
                 l(info=info,
                   value=critic_info.critics[:, :, i, ...],
                   target_value=critic_info.target_critic).loss)
-
         critic_loss = math_ops.add_n(critic_losses)
 
         if self._calculate_priority:

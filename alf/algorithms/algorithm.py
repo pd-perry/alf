@@ -1416,17 +1416,6 @@ class Algorithm(AlgorithmInterface):
                 offline_experience, offline_batch_info = self._offline_replay_buffer.get_batch(
                     batch_size=(
                         mini_batch_size * config.num_updates_per_train_iter),
-<<<<<<< HEAD
-                    batch_length=config.mini_batch_length)
-            # train hybrid
-            with record_time("time/offline_train"):
-                return self._train_hybrid_experience(
-                    experience, batch_info, offline_experience,
-                    offline_batch_info, num_updates, mini_batch_size,
-                    config.mini_batch_length,
-                    (config.update_counter_every_mini_batch
-                     and update_global_counter))
-=======
                     batch_length=config.mini_batch_length,
                     index=self._bootstrap_index)
                 num_updates = 1
@@ -1442,7 +1431,6 @@ class Algorithm(AlgorithmInterface):
                  and update_global_counter),
                 whole_replay_buffer_training=config.
                 whole_replay_buffer_training)
->>>>>>> 37daa40... implemented base bootstrap procedure
 
     def _train_experience(self,
                           experience,

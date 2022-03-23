@@ -23,6 +23,7 @@ from typing import Callable
 
 import alf
 from alf.algorithms.config import TrainerConfig
+from alf.algorithms.multiagent_one_step_loss import MultiAgentOneStepTDLoss
 from alf.algorithms.off_policy_algorithm import OffPolicyAlgorithm
 from alf.algorithms.one_step_loss import OneStepTDLoss
 from alf.algorithms.rl_algorithm import RLAlgorithm
@@ -150,7 +151,14 @@ class DdpgAlgorithm(OffPolicyAlgorithm):
         actor_network = actor_network_ctor(
             input_tensor_spec=observation_spec, action_spec=action_spec)
 
-        critic_networks = critic_network.make_parallel(num_critic_replicas)
+        self._num_parallel_agents = config.num_parallel_agents
+        if config.num_parallel_agents > 1:
+            #num_critic_replicas forced to be 1
+            num_critic_replicas = 1
+            critic_networks = critic_network.make_parallel(config.num_parallel_agents)
+            actor_network = actor_network.make_parallel(config.num_parallel_agents)
+        else:
+            critic_networks = critic_network.make_parallel(num_critic_replicas)
 
         self._action_l2 = action_l2
 
@@ -190,14 +198,24 @@ class DdpgAlgorithm(OffPolicyAlgorithm):
 
         self._rollout_random_action = float(rollout_random_action)
 
-        if critic_loss_ctor is None:
-            critic_loss_ctor = OneStepTDLoss
-        critic_loss_ctor = functools.partial(
-            critic_loss_ctor, debug_summaries=debug_summaries)
-        self._critic_losses = [None] * num_critic_replicas
-        for i in range(num_critic_replicas):
-            self._critic_losses[i] = critic_loss_ctor(
-                name=("critic_loss" + str(i)))
+        #Configures critic loss for parallel agents
+        if config.num_parallel_agents > 1:
+            critic_loss_ctor = MultiAgentOneStepTDLoss
+            critic_loss_ctor = functools.partial(
+                critic_loss_ctor, debug_summaries=debug_summaries)
+            self._critic_losses = [None] * config.num_parallel_agents
+            for i in range(config.num_parallel_agents):
+                self._critic_losses[i] = critic_loss_ctor(
+                    name=("critic_loss" + str(i)))
+        else:
+            if critic_loss_ctor is None:
+                critic_loss_ctor = OneStepTDLoss
+            critic_loss_ctor = functools.partial(
+                critic_loss_ctor, debug_summaries=debug_summaries)
+            self._critic_losses = [None] * num_critic_replicas
+            for i in range(num_critic_replicas):
+                self._critic_losses[i] = critic_loss_ctor(
+                    name=("critic_loss" + str(i)))
 
         self._ou_process = common.create_ou_process(action_spec, ou_stddev,
                                                     ou_damping)
@@ -219,6 +237,11 @@ class DdpgAlgorithm(OffPolicyAlgorithm):
         action, state = self._actor_network(
             time_step.observation, state=state.actor.actor)
         empty_state = nest.map_structure(lambda x: (), self.train_state_spec)
+
+        #Takes the diagonal for multiagent
+        if self._num_parallel_agents > 1:
+            action = torch.diagonal(action, 0)
+            action = action.transpose(0, 1)
 
         def _sample(a, ou):
             if epsilon_greedy == 0:
@@ -317,6 +340,8 @@ class DdpgAlgorithm(OffPolicyAlgorithm):
         actor_loss = nest.map_structure(actor_loss_fn, dqda, action)
         state = DdpgActorState(actor=actor_state, critics=critic_states)
         info = LossInfo(loss=sum(nest.flatten(actor_loss)), extra=actor_loss)
+
+        import pdb; pdb.set_trace()
         return AlgStep(output=action, state=state, info=info)
 
     def train_step(self, inputs: TimeStep, state: DdpgState,
@@ -324,6 +349,7 @@ class DdpgAlgorithm(OffPolicyAlgorithm):
         critic_states, critic_info = self._critic_train_step(
             inputs=inputs, state=state.critics, rollout_info=rollout_info)
         policy_step = self._actor_train_step(inputs=inputs, state=state.actor)
+        import pdb; pdb.set_trace()
         return policy_step._replace(
             state=DdpgState(actor=policy_step.state, critics=critic_states),
             info=DdpgInfo(
@@ -354,6 +380,8 @@ class DdpgAlgorithm(OffPolicyAlgorithm):
             priority = ()
 
         actor_loss = info.actor_loss
+
+        import pdb; pdb.set_trace()
 
         return LossInfo(
             loss=critic_loss + actor_loss.loss,
