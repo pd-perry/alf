@@ -125,7 +125,8 @@ class QrsacAlgorithm(SacAlgorithm):
                          action,
                          critics_state,
                          replica_min: bool = True,
-                         quantile_mean: bool = True):
+                         quantile_mean: bool = True,
+                         rollout = False):
         critic_inputs = (observation, action)
         critic_quantiles, critics_state = critic_net(
             critic_inputs, state=critics_state)
@@ -138,6 +139,10 @@ class QrsacAlgorithm(SacAlgorithm):
             critic_quantiles = critic_quantiles.reshape(
                 -1, self._num_critic_replicas, *self._reward_spec.shape,
                 *remaining_shape)
+        if self._num_parallel_agents > 1:
+            replica_min = False
+            if rollout:
+                critic_quantiles = critic_quantiles.diagonal(0).transpose(0, 1)
         if replica_min:
             # Compute the min quantile distribution of critic replicas by
             # choosing the one with the lowest distribution mean
@@ -173,10 +178,15 @@ class QrsacAlgorithm(SacAlgorithm):
             state.critics,
             replica_min=False,
             quantile_mean=False)
+        
+        if self._num_parallel_agents > 1:
+            observation = inputs.observation.unsqueeze(1).repeat([1, self._num_parallel_agents, 1])
+        else:
+            observation = inputs.observation
 
         target_critics, target_critics_state = self._compute_critics(
             self._target_critic_networks,
-            inputs.observation,
+            observation,
             action,
             state.target_critics,
             quantile_mean=False)
