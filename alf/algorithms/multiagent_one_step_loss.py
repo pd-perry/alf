@@ -31,7 +31,7 @@ class MultiAgentOneStepTDLoss(TDLoss):
             gamma=gamma,
             td_error_loss_fn=td_error_loss_fn,
             debug_summaries=debug_summaries,
-            td_lambda=0.0,
+            td_lambda=0.95,
             name=name)
 
     def forward(self, info: namedtuple, value: torch.Tensor,
@@ -57,9 +57,15 @@ class MultiAgentOneStepTDLoss(TDLoss):
             LossInfo: with the ``extra`` field same as ``loss``.
         """
         returns = torch.zeros((target_value.shape[0]-1, target_value.shape[1], target_value.shape[2]))
-        for n in range(target_value.shape[2]):
-            returns_n = self.compute_td_target(info, target_value[:, :, n])
-            returns[:, :, n] = returns_n
+        if target_value.shape == info.reward.shape:
+            info = info._replace(reward = info.reward[:, :, 0])
+            for n in range(target_value.shape[2]):
+                returns_n = self.compute_td_target(info, target_value[:, :, n])
+                returns[:, :, n] = returns_n
+        else: 
+            for n in range(target_value.shape[2]):
+                returns_n = self.compute_td_target(info, target_value[:, :, n])
+                returns[:, :, n] = returns_n
         
         value = value[:-1]
 

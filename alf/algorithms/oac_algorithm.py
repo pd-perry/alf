@@ -126,7 +126,7 @@ class OacAlgorithm(SacAlgorithm):
                         epsilon_greedy=None,
                         eps_greedy_sampling=False,
                         rollout=False,
-                        explore=False):
+                        explore=False,):
         """
         Differences between SacAlgorithm._predict_action:
 
@@ -164,6 +164,8 @@ class OacAlgorithm(SacAlgorithm):
             with torch.enable_grad():
                 for transform in action_dist.transforms:
                     transformed_action = transform(transformed_action)
+                if self._num_parallel_agents > 1:
+                    transformed_action = transformed_action.diagonal(0).transpose(0, 1)
                 critics, critic_state = self._critic_networks(
                     (observation, transformed_action), state=state.critic)
                 new_state = new_state._replace(critic=critic_state)
@@ -212,7 +214,7 @@ class OacAlgorithm(SacAlgorithm):
             epsilon_greedy=1.0,
             eps_greedy_sampling=True,
             rollout=True,
-            explore=self._explore)
+            explore=self._explore,)
 
         if self.need_full_rollout_state():
             _, critics_state = self._compute_critics(

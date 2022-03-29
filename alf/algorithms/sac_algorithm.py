@@ -27,6 +27,7 @@ from typing import Callable
 
 import alf
 from alf.algorithms.config import TrainerConfig
+from alf.algorithms.multiagent_one_step_loss import MultiAgentOneStepTDLoss
 from alf.algorithms.off_policy_algorithm import OffPolicyAlgorithm
 from alf.algorithms.one_step_loss import OneStepTDLoss
 from alf.algorithms.rl_algorithm import RLAlgorithm
@@ -338,6 +339,9 @@ class SacAlgorithm(OffPolicyAlgorithm):
         # Have different names to separate their summary curves
         self._critic_losses = []
         if self._num_parallel_agents > 1:
+            critic_loss_ctor = MultiAgentOneStepTDLoss
+            critic_loss_ctor = functools.partial(
+            critic_loss_ctor, debug_summaries=debug_summaries)
             for i in range(self._num_parallel_agents):
                 self._critic_losses.append(
                     critic_loss_ctor(name="critic_loss%d" % (i + 1)))
@@ -771,7 +775,6 @@ class SacAlgorithm(OffPolicyAlgorithm):
             discrete_act_dist = action_distribution[0]
             target_critics = torch.sum(
                 discrete_act_dist.probs * target_critics, dim=-1)
-
         if not self._num_parallel_agents > 1:
             target_critic = target_critics.reshape(inputs.reward.shape)
             target_critic = target_critic.detach()
@@ -918,8 +921,12 @@ class SacAlgorithm(OffPolicyAlgorithm):
                 discount = self._critic_losses[0].gamma * info.discount
 
                 if self._num_parallel_agents > 1:
-                    discount = discount.unsqueeze(1).repeat([1, self._num_parallel_agents, 1])
-                    reward = info.reward.unsqueeze(1).repeat([1, self._num_parallel_agents, 1])
+                    if not self._config.mini_batch_length == None and self._config.mini_batch_length > 1:
+                        discount = discount.unsqueeze(2).repeat([1, 1, self._num_parallel_agents])
+                        reward = info.reward.unsqueeze(2).repeat([1, 1, self._num_parallel_agents])
+                    else:
+                        discount = discount.unsqueeze(1).repeat([1, self._num_parallel_agents, 1])
+                        reward = info.reward.unsqueeze(1).repeat([1, self._num_parallel_agents, 1])
                     info = info._replace(
                         reward=(reward + common.expand_dims_as(
                             entropy_reward * discount, reward)))
@@ -931,10 +938,17 @@ class SacAlgorithm(OffPolicyAlgorithm):
         critic_info = info.critic
         critic_losses = []
         for i, l in enumerate(self._critic_losses):
-            critic_losses.append(
-                l(info=info,
-                  value=critic_info.critics[:, :, i, ...],
-                  target_value=critic_info.target_critic).loss)
+            if self._num_parallel_agents > 1:
+                loss = l(info=info,
+                  value=critic_info.critics,
+                  target_value=critic_info.target_critic, noise=None)
+                critic_losses.append(loss.loss)
+
+            else:
+                critic_losses.append(
+                    l(info=info,
+                    value=critic_info.critics[:, :, i, ...],
+                    target_value=critic_info.target_critic).loss)
         critic_loss = math_ops.add_n(critic_losses)
 
         if self._calculate_priority:
