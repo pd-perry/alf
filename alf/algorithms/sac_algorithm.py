@@ -173,6 +173,7 @@ class SacAlgorithm(OffPolicyAlgorithm):
                  actor_optimizer=None,
                  critic_optimizer=None,
                  alpha_optimizer=None,
+                 bootstrap=False,
                  debug_summaries=False,
                  reproduce_locomotion=False,
                  name="SacAlgorithm"):
@@ -259,6 +260,12 @@ class SacAlgorithm(OffPolicyAlgorithm):
                 in the beginning and different masks for actor and critic losses.
             name (str): The name of this algorithm.
         """
+        if bootstrap:
+            bootstrap_index = np.random.randint(0, config.replay_buffer_length - 1, size=(config.num_parallel_agents, config.replay_buffer_length))
+            bootstrap_index = torch.from_numpy(bootstrap_index)
+            bootstrap_index = torch.sort(bootstrap_index, dim=-1).values
+        else:
+            bootstrap_index = None
         self._num_parallel_agents = config.num_parallel_agents
         self._num_critic_replicas = num_critic_replicas
         self._calculate_priority = calculate_priority
@@ -307,6 +314,7 @@ class SacAlgorithm(OffPolicyAlgorithm):
             reward_weights=reward_weights,
             env=env,
             config=config,
+            bootstrap_index=bootstrap_index,
             debug_summaries=debug_summaries,
             name=name)
 
@@ -750,8 +758,7 @@ class SacAlgorithm(OffPolicyAlgorithm):
             state.critics,
             replica_min=False,
             apply_reward_weights=False)
-
-        if self._num_parallel_agents > 1:
+        if self._num_parallel_agents > 1 and inputs.observation.ndim < 3:
             observation = inputs.observation.unsqueeze(1).repeat([1, self._num_parallel_agents, 1])
         else:
             observation = inputs.observation
@@ -823,6 +830,7 @@ class SacAlgorithm(OffPolicyAlgorithm):
             inputs, state.critic, rollout_info, action, action_distribution)
         alpha_loss = self._alpha_train_step(log_pi)
         # import pdb; pdb.set_trace()
+
         state = SacState(
             action=action_state, actor=actor_state, critic=critic_state)
         info = SacInfo(
@@ -877,6 +885,8 @@ class SacAlgorithm(OffPolicyAlgorithm):
                 else:
                     loss = math_ops.add_ignore_empty(actor_loss.loss,
                                                     critic_loss.loss + alpha_loss.sum(dim=2))
+                    actor_loss = actor_loss._replace(extra=actor_loss.extra._replace(neg_entropy=actor_loss.extra.neg_entropy.sum(dim=2)))
+                    alpha_loss = alpha_loss.sum(dim=2)
             else:
                 loss = math_ops.add_ignore_empty(actor_loss.loss,
                                                 critic_loss.loss + alpha_loss)

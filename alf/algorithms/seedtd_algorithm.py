@@ -125,7 +125,7 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
         self._epsilon_greedy = config.epsilon_greedy
         self._config = config
 
-        self._update_target = common.get_target_updater(
+        self._update_target = common.TargetUpdater(
             models=[self._network],
             target_models=[self._target_network],
             tau=target_update_tau,

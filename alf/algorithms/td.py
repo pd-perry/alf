@@ -1,3 +1,4 @@
+from turtle import pd
 from torch._C import Value
 from alf.algorithms.config import TrainerConfig
 from alf.algorithms.multiagent_one_step_loss import MultiAgentOneStepTDLoss
@@ -164,7 +165,6 @@ class TD(OffPolicyAlgorithm):
                                   discount=inputs.discount))
 
     def train_step(self, inputs: TimeStep, state, rollout_info: SeedTDInfo):
-
         target_value, _ = self._network(inputs.observation)
         action = torch.argmax(target_value, dim=-1)
         action = action.to(torch.int64)
