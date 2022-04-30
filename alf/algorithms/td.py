@@ -35,7 +35,7 @@ class TD(OffPolicyAlgorithm):
                  v=0.01,
                  gamma=0.99,
                  epsilon_greedy=0.1,
-                 max_episodic_reward=0,
+                 max_episodic_reward=100,
                  bootstrap=False,
                  env=None,
                  optimizer=None,
@@ -79,6 +79,7 @@ class TD(OffPolicyAlgorithm):
             bootstrap_index = torch.sort(bootstrap_index, dim=-1).values
         else:
             bootstrap_index = None
+        self._bootstrap = bootstrap
         super().__init__(observation_spec=observation_spec,
                          action_spec=action_spec,
                          train_state_spec=SeedTDState(),
@@ -178,21 +179,23 @@ class TD(OffPolicyAlgorithm):
         rollout_action = rollout_action.transpose(0, 1)
         value = value.gather(dim=-1, index=rollout_action.unsqueeze(2))
         value = torch.squeeze(value)
+        import pdb; pdb.set_trace()
 
         return AlgStep(output=action,
                        state=SeedTDState(),
                        info=SeedTDInfo(discount=inputs.discount,
-                                  step_type=inputs.step_type,
+                                  step_type=inputs.env_id,
                                   action=action,
                                   reward=inputs.reward,
                                   target_value=target_value,
                                   value=value))
 
     def calc_loss(self, info: SeedTDInfo):
+        import pdb; pdb.set_trace()
 
         if self._config.num_parallel_agents > 1: 
             loss_fn = MultiAgentOneStepTDLoss(gamma=self._gamma, debug_summaries=True)
-            loss = loss_fn(info, value=info.value, target_value=info.target_value, noise=None)            
+            loss = loss_fn(info, value=info.value, target_value=info.target_value, noise=None, bootstrap=self._bootstrap)            
         else:
             loss_fn = OneStepTDLoss(gamma=self._gamma, debug_summaries=True)
             loss = loss_fn(info=info, value=torch.squeeze(info.value), target_value=info.target_value)

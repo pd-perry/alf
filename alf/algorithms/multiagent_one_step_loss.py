@@ -15,7 +15,8 @@ class MultiAgentOneStepTDLoss(TDLoss):
                  gamma: Union[float, List[float]] = 0.99,
                  td_error_loss_fn: Callable = losses.element_wise_squared_loss,
                  debug_summaries: bool = False,
-                 name: str = "OneStepTDLoss"):
+                 bootstrap: bool = False,
+                 name: str = "MultiAgentOneStepTDLoss"):
         """
         Args:
             gamma: A discount factor for future rewards. For
@@ -33,9 +34,10 @@ class MultiAgentOneStepTDLoss(TDLoss):
             debug_summaries=debug_summaries,
             td_lambda=0.95,
             name=name)
+        self._bootstrap = bootstrap
 
     def forward(self, info: namedtuple, value: torch.Tensor,
-                target_value: torch.Tensor, noise: None):
+                target_value: torch.Tensor, noise=None, bootstrap=False):
         """Calculate the loss.
 
         The first dimension of all the tensors is time dimension and the second
@@ -56,6 +58,7 @@ class MultiAgentOneStepTDLoss(TDLoss):
         Returns:
             LossInfo: with the ``extra`` field same as ``loss``.
         """
+        bootstrap = self._bootstrap or bootstrap
         returns = torch.zeros((target_value.shape[0]-1, target_value.shape[1], target_value.shape[2]))
         if target_value.shape == info.reward.shape:
             info = info._replace(reward = info.reward[:, :, 0])
@@ -105,7 +108,12 @@ class MultiAgentOneStepTDLoss(TDLoss):
         if noise != None:
             returns = returns + noise[:-1, :, :]
         loss = self._td_error_loss_fn(returns.detach(), value)
-        loss = torch.squeeze(loss.sum(dim=-1))
+        if bootstrap:
+            loss = torch.squeeze(torch.diagonal(loss, dim1=-2, dim2=-1))
+        else:
+            loss = torch.squeeze(loss.sum(dim=-1))
+        
+        import pdb; pdb.set_trace()
 
         if loss.ndim == 3:
             # Multidimensional reward. Average over the critic loss for all dimensions

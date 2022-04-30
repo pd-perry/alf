@@ -1371,7 +1371,8 @@ class Algorithm(AlgorithmInterface):
                     experience, batch_info = self._replay_buffer.get_batch(
                         batch_size=(mini_batch_size *
                                     config.num_updates_per_train_iter),
-                        batch_length=config.mini_batch_length)
+                        batch_length=config.mini_batch_length,
+                        index=self._bootstrap_index)
                     num_updates = 1
             return experience, batch_info, num_updates, mini_batch_size
 
@@ -1505,8 +1506,9 @@ class Algorithm(AlgorithmInterface):
                 # error: https://github.com/pytorch/pytorch/issues/59756
                 indices = alf.nest.utils.convert_device(
                     torch.randperm(batch_size, device='cpu'))
+            if self._bootstrap:
+                indices = None
             for b in range(0, batch_size, mini_batch_size):
-
                 is_last_mini_batch = (u == num_updates - 1
                                       and b + mini_batch_size >= batch_size)
                 do_summary = (is_last_mini_batch
@@ -1522,7 +1524,6 @@ class Algorithm(AlgorithmInterface):
                                             mini_batch_size,
                                             update_counter_every_mini_batch,
                                             do_summary)
-
                 exp, train_info, loss_info, params = self._update(
                     mini_batch_list[0],
                     mini_batch_info_list[0],
@@ -1578,7 +1579,7 @@ class Algorithm(AlgorithmInterface):
 
         length = alf.nest.get_nest_size(experience, dim=1)
         mini_batch_length = (mini_batch_length or length)
-        if not whole_replay_buffer_training:
+        if not whole_replay_buffer_training and not self._bootstrap:
             assert mini_batch_length == length, (
                 "mini_batch_length (%s) is "
                 "different from length (%s). Not supported." %
@@ -1633,10 +1634,17 @@ class Algorithm(AlgorithmInterface):
                 # mini_batch_length, the temporal correlation can be better
                 # captured.
                 pass
-
-        experience = alf.nest.map_structure(
-            lambda x: x.reshape(-1, mini_batch_length, *x.shape[2:]),
-            experience)
+        # import pdb; pdb.set_trace()
+        # if self._bootstrap:
+        #     #if bootstrap, the second dimension needs to have mini_batch_length * num_agents shape
+        #     import pdb; pdb.set_trace()
+        #     experience = alf.nest.map_structure(
+        #         lambda x: x.reshape(-1, mini_batch_length * self._bootstrap_index.shape[0], *x.shape[2:]),
+        #         experience)
+        else:
+            experience = alf.nest.map_structure(
+                lambda x: x.reshape(-1, mini_batch_length, *x.shape[2:]),
+                experience)
 
         batch_size = alf.nest.get_nest_batch_size(experience)
 
@@ -1848,6 +1856,7 @@ class Algorithm(AlgorithmInterface):
                 batch = alf.nest.map_structure(lambda x: x[batch_indices],
                                                experience)
                 if batch_info:
+                    import pdb; pdb.set_trace()
                     binfo = alf.nest.map_structure(
                         lambda x: x[batch_indices] if isinstance(
                             x, torch.Tensor) else x, batch_info)

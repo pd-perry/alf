@@ -52,6 +52,7 @@ class OacAlgorithm(SacAlgorithm):
                  calculate_priority=False,
                  num_critic_replicas=2,
                  env=None,
+                 max_episodic_reward=100,
                  config: TrainerConfig = None,
                  critic_loss_ctor=None,
                  target_entropy=None,
@@ -69,6 +70,7 @@ class OacAlgorithm(SacAlgorithm):
                  actor_optimizer=None,
                  critic_optimizer=None,
                  alpha_optimizer=None,
+                 bootstrap=False,
                  debug_summaries=False,
                  reproduce_locomotion=False,
                  name="OacAlgorithm"):
@@ -96,6 +98,7 @@ class OacAlgorithm(SacAlgorithm):
             calculate_priority=calculate_priority,
             num_critic_replicas=num_critic_replicas,
             env=env,
+            max_episodic_reward=max_episodic_reward,
             config=config,
             critic_loss_ctor=critic_loss_ctor,
             target_entropy=target_entropy,
@@ -110,6 +113,7 @@ class OacAlgorithm(SacAlgorithm):
             alpha_optimizer=alpha_optimizer,
             debug_summaries=debug_summaries,
             reproduce_locomotion=reproduce_locomotion,
+            bootstrap=bootstrap,
             name=name)
 
         if explore:

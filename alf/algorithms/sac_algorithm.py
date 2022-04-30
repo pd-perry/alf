@@ -160,6 +160,7 @@ class SacAlgorithm(OffPolicyAlgorithm):
                  calculate_priority=False,
                  num_critic_replicas=2,
                  env=None,
+                 max_episodic_reward=100,
                  config: TrainerConfig = None,
                  critic_loss_ctor=None,
                  target_entropy=None,
@@ -318,6 +319,16 @@ class SacAlgorithm(OffPolicyAlgorithm):
             debug_summaries=debug_summaries,
             name=name)
 
+        if env is not None:
+            metric_buf_size = max(self._config.metric_min_buffer_size,
+                                  self._env.batch_size)
+            example_time_step = env.reset()
+            self._metrics.append(alf.metrics.AverageRegretMetric(
+                    max_episodic_reward=max_episodic_reward,
+                    buffer_size=metric_buf_size,
+                    example_time_step=example_time_step
+                ))
+
         if actor_optimizer is not None and actor_network is not None:
             self.add_optimizer(actor_optimizer, [actor_network])
         if critic_optimizer is not None:
@@ -349,7 +360,7 @@ class SacAlgorithm(OffPolicyAlgorithm):
         if self._num_parallel_agents > 1:
             critic_loss_ctor = MultiAgentOneStepTDLoss
             critic_loss_ctor = functools.partial(
-            critic_loss_ctor, debug_summaries=debug_summaries)
+            critic_loss_ctor, debug_summaries=debug_summaries, bootstrap=bootstrap)
             for i in range(self._num_parallel_agents):
                 self._critic_losses.append(
                     critic_loss_ctor(name="critic_loss%d" % (i + 1)))

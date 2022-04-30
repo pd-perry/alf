@@ -87,6 +87,8 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
         else:
             bootstrap_index = None
 
+        self._bootstrap = bootstrap
+
         super().__init__(observation_spec=observation_spec,
                          action_spec=action_spec,
                          train_state_spec=SeedTDState(),
@@ -239,7 +241,6 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
 
     def calc_loss(self, info: SeedTDInfo):
         loss_fn = MultiAgentOneStepTDLoss(gamma=self._gamma, debug_summaries=True)
-
         gaussian_noise = info.noise
         if self._config.num_parallel_agents == 1:
             returns = value_ops.one_step_discounted_return(
@@ -260,7 +261,7 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
             # loss = element_wise_squared_loss(returns, info.new_value)
             # loss = loss.sum(dim=-1)
 
-            loss = loss_fn(info, value=info.value, target_value=info.target_value, noise=gaussian_noise)            
+            loss = loss_fn(info, value=info.value, target_value=info.target_value, noise=gaussian_noise, bootstrap=self._bootstrap)            
 
         """info.value, returns after extending, and loss should be the same shape"""
         if self._debug_summaries:

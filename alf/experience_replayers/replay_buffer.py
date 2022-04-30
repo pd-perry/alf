@@ -410,14 +410,23 @@ class ReplayBuffer(RingBuffer):
             start_pos = info.positions
             env_ids = info.env_ids
 
-            idx = start_pos.reshape(-1, 1)  # [B, 1]
-            idx = self.circular(
-                idx + torch.arange(batch_length).unsqueeze(0))  # [B, T]
-            out_env_ids = env_ids.reshape(-1, 1).expand(
-                batch_size, batch_length)  # [B, T]
+            ##if bootstrap, agent takes the diagonal when training so they have to sample experience from other agents' buffers
+            ##we assume a shared replay buffer means one observation per agent. idx // 10 is the index and idx % 10 is the env_id
+            if index != None:
+                idx = start_pos
+                t = idx #used for debug
+                out_env_ids = idx % index.shape[0]
+                idx = idx // index.shape[0]
+            else:
+                idx = start_pos.reshape(-1, 1)  # [B, 1]
+                idx = self.circular(
+                    idx + torch.arange(batch_length).unsqueeze(0))  # [B, T]
+                out_env_ids = env_ids.reshape(-1, 1).expand(
+                    batch_size, batch_length)  # [B, T]
             result = alf.nest.map_structure(lambda b: b[(out_env_ids, idx)],
                                             self._buffer)
-
+            # ind = [(i, j) for i in range(500) for j in range(500) if idx[0, i] == idx[0, j] and out_env_ids[0, i] == out_env_ids[0, j] and i != j]
+            import pdb; pdb.set_trace()
             if alf.summary.should_record_summaries():
                 alf.summary.scalar(
                     "replayer/" + self._name + ".original_reward_mean",
@@ -491,17 +500,31 @@ class ReplayBuffer(RingBuffer):
 
         if index != None:
             ##num_index is the number of elements in the index of each agent less than current size
-            num_index = (index <= self._current_size[0] - d).sum(dim=1)
-            pos = (r * num_index[env_ids]).to(torch.int64)
-            if batch_size_per_env > 1:
-                pos = torch.reshape(pos, (-1, index.shape[0]))
-                store = torch.zeros(pos.shape)
-                for i in range(pos.shape[0]):
-                    store[i, :] = index.gather(dim=1, index=pos[i, :].unsqueeze(dim=1)).squeeze()
-                pos = store.reshape(env_ids.shape)
-            else:
-                pos = index.gather(dim=1, index=pos.unsqueeze(dim=1)).squeeze()
-            pos += (self._current_pos - num_positions - batch_length + 1)[env_ids]
+            #(self._current_size[0] - d)*num_index since there are num_index agents each with a buffer
+            num_index = (index <= self.total_size-10).sum(dim=1)
+            # num_index = (index <= self._current_size[0] - d).sum(dim=1)
+            if batch_length > 1:
+                # #makes pos dimension [num_updates * num_agent, batch_length * num_agent]
+                ##assert batch_length == 2
+                r = torch.rand(env_ids.shape[0]//index.shape[0]//batch_length, index.shape[0])
+                pos = (r * num_index[env_ids][:batch_size_per_env//2].reshape(-1, index.shape[0]).repeat(index.shape[0], 1)).to(torch.int64)
+                #pos becomes a [batch_size, num_agents] tensor
+                #TODO: can simplify second part to num_index.repeat
+                #TODO: currently only takes [batch_size, batch_length * num_agents] experience, check if need factor of ten
+                store = torch.zeros((pos.shape[0], pos.shape[1]*2))
+                for i in range(store.shape[1]):
+                    if i % 2 == 0:
+                        #if even index gather from bootstrap index
+                        store[:, i] = index[i//2, :].gather(dim=0, index=pos[:, i//2])
+                    else:
+                        #if odd index then set to consecutive observation
+                        store[:, i] = (store[:, i-1] + 10*torch.ones((store[:, i-1].shape))).to(torch.int64) #makes second row the consecutive element
+                pos = store
+                import pdb; pdb.set_trace()
+            else: 
+                r = torch.rand(*env_ids.shape)
+                pos = (r * num_index[env_ids]).to(torch.int64)
+                pos += (self._current_pos - num_positions - batch_length + 1)[env_ids]
             pos = pos.type(torch.LongTensor)
         else:
             pos = (r * num_positions[env_ids]).to(torch.int64)
