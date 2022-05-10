@@ -1368,6 +1368,7 @@ class Algorithm(AlgorithmInterface):
                     assert config.mini_batch_length is not None, (
                         "No mini_batch_length is specified for off-policy training"
                     )
+                    # import pdb; pdb.set_trace()
                     experience, batch_info = self._replay_buffer.get_batch(
                         batch_size=(mini_batch_size *
                                     config.num_updates_per_train_iter),
@@ -1634,18 +1635,17 @@ class Algorithm(AlgorithmInterface):
                 # mini_batch_length, the temporal correlation can be better
                 # captured.
                 pass
-        # import pdb; pdb.set_trace()
         # if self._bootstrap:
-        #     #if bootstrap, the second dimension needs to have mini_batch_length * num_agents shape
-        #     import pdb; pdb.set_trace()
+        #     #if bootstrap, the second dimension needs to have mini_batch_size * num_agents shape
+        #     batch_size = alf.nest.get_nest_batch_size(experience)
         #     experience = alf.nest.map_structure(
-        #         lambda x: x.reshape(-1, mini_batch_length * self._bootstrap_index.shape[0], *x.shape[2:]),
+        #         lambda x: x.reshape(batch_size * self._bootstrap_index.shape[0], mini_batch_length, *x.shape[2:]),
         #         experience)
         else:
             experience = alf.nest.map_structure(
                 lambda x: x.reshape(-1, mini_batch_length, *x.shape[2:]),
                 experience)
-
+        # import pdb; pdb.set_trace()
         batch_size = alf.nest.get_nest_batch_size(experience)
 
         return (experience, processed_exp_spec, batch_info, length,
@@ -1838,12 +1838,21 @@ class Algorithm(AlgorithmInterface):
         alf.summary.enable_summary(do_summary)
 
         if indices is None:
-            batch_indices = slice(
-                mini_batch_start_position,
-                min(batch_size, mini_batch_start_position + mini_batch_size))
+            if self._bootstrap_index != None:
+                batch_indices = slice(
+                    mini_batch_start_position,
+                    min(batch_size, mini_batch_start_position + mini_batch_size*self._bootstrap_index.shape[0]))
+            else:
+                batch_indices = slice(
+                    mini_batch_start_position,
+                    min(batch_size, mini_batch_start_position + mini_batch_size))
         else:
-            batch_indices = indices[mini_batch_start_position:min(
-                batch_size, mini_batch_start_position + mini_batch_size)]
+            if self._bootstrap_index != None:
+                batch_indices = indices[mini_batch_start_position:min(
+                batch_size, mini_batch_start_position + mini_batch_size*self._bootstrap_index.shape[0])]
+            else:
+                batch_indices = indices[mini_batch_start_position:min(
+                    batch_size, mini_batch_start_position + mini_batch_size)]
 
         def _make_time_major(nest):
             """Put the time dim to axis=0."""
@@ -1855,8 +1864,9 @@ class Algorithm(AlgorithmInterface):
             if experience is not None:
                 batch = alf.nest.map_structure(lambda x: x[batch_indices],
                                                experience)
+                #TODO: COMPARE IF TAKING 500 AS BATCH SIZE MATCHES UP, should be [500, 2]
                 if batch_info:
-                    import pdb; pdb.set_trace()
+                    # import pdb; pdb.set_trace()
                     binfo = alf.nest.map_structure(
                         lambda x: x[batch_indices] if isinstance(
                             x, torch.Tensor) else x, batch_info)

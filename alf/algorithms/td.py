@@ -179,7 +179,7 @@ class TD(OffPolicyAlgorithm):
         rollout_action = rollout_action.transpose(0, 1)
         value = value.gather(dim=-1, index=rollout_action.unsqueeze(2))
         value = torch.squeeze(value)
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
 
         return AlgStep(output=action,
                        state=SeedTDState(),
@@ -191,7 +191,7 @@ class TD(OffPolicyAlgorithm):
                                   value=value))
 
     def calc_loss(self, info: SeedTDInfo):
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
 
         if self._config.num_parallel_agents > 1: 
             loss_fn = MultiAgentOneStepTDLoss(gamma=self._gamma, debug_summaries=True)

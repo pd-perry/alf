@@ -109,11 +109,14 @@ class MultiAgentOneStepTDLoss(TDLoss):
             returns = returns + noise[:-1, :, :]
         loss = self._td_error_loss_fn(returns.detach(), value)
         if bootstrap:
-            loss = torch.squeeze(torch.diagonal(loss, dim1=-2, dim2=-1))
+            # loss = torch.squeeze(loss)
+            # loss = torch.diagonal(torch.reshape(loss, (-1, target_value.shape[2], target_value.shape[2])), dim1=-2, dim2=-1)
+            loss = torch.diagonal(torch.reshape(loss, (-1, target_value.shape[2], target_value.shape[2])), dim1=-2, dim2=-1)
+            loss = loss.reshape(-1, target_value.shape[1])
         else:
             loss = torch.squeeze(loss.sum(dim=-1))
         
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
 
         if loss.ndim == 3:
             # Multidimensional reward. Average over the critic loss for all dimensions
