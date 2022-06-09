@@ -19,6 +19,22 @@ import numpy as np
 
 
 class BipolarChains(gym.Env):
+    """
+    A bipolar chains environment to test the concurrent agents' adaptivity, 
+    diversity, and commitment. The chain has length N, where N is always even and 
+    each location is represented using 0 except the location the agent is located. 
+    For example, for N = 4, a valid observation is 
+
+        0 0 1 0 
+
+    and the agent is at i==2.
+
+    The agent always starts from i==N/2. The left and right end have equal probability
+    of containing a positive reward of N, with the other end having reward -N. The goal 
+    is to reach the end with the positive reward. The agent has two actions, namely 0
+    which moves it to the left and 1 which moves it to the right. The game ends when
+    the agent reaches either end.
+    """
 
     def __init__(self, N=50):
         super().__init__()

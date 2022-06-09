@@ -4,17 +4,15 @@ from alf.algorithms.trac_algorithm import TracAlgorithm
 from alf.algorithms.data_transformer import RewardScaling
 from alf.environments import suite_simple
 
-from bipolar_chains import BipolarChains
+from alf.environments.bipolar_chains import BipolarChains
 from alf.environments.suite_simple import load
 import alf.environments.suite_bsuite as bsuite
 from bsuite import sweep
 
-from seed_td import SeedTD
-from seed_td_on_policy import SeedTDOP
+from alf.algorithms.seedtd_algorithm import SeedTDAlgorithm
 
 from alf.environments.utils import create_environment
 
-from seed_td_sample import SeedTDSample
 
 # environment config
 # alf.config(
@@ -30,7 +28,7 @@ alf.config('RewardScaling', scale=0.01)
 # algorithm config
 alf.config('QNetwork', fc_layer_params=(50, 50 ))
 alf.config(
-    'SeedTD',
+    'SeedTDAlgorithm',
     optimizer=alf.optimizers.Adam(lr=5e-2, weight_decay=1e-5))
 
 alf.config(
@@ -38,7 +36,7 @@ alf.config(
     initial_collect_steps=6,
     unroll_length=1,
     num_parallel_agents=5,
-    algorithm_ctor=SeedTD,
+    algorithm_ctor=SeedTDAlgorithm,
     num_iterations=150,
     num_checkpoints=5,
     evaluate=False,

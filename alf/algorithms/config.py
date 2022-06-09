@@ -33,6 +33,7 @@ class TrainerConfig(object):
                  data_transformer_ctor=None,
                  random_seed=None,
                  num_iterations=1000,
+                 num_parallel_agents=1,
                  num_env_steps=0,
                  unroll_length=8,
                  unroll_with_grad=False,
@@ -120,11 +121,8 @@ class TrainerConfig(object):
                 ``initial_collect_steps>0``, then the first
                 ``initial_collect_steps//(unroll_length*num_envs)`` iterations
                 won't perform any training. For SL trainer, indicates the number
-                of training epochs. If both `num_iterations` and `num_env_steps`
-                are set, `num_iterations` must be big enough to consume so many
-                environment steps. And after `num_env_steps` enviroment steps are
-                generated, the training will not interact with environments
-                anymore, which means that it will only train on replay buffer.
+                of training epochs.
+            num_parallel_agents (int): number of parallel agents acting at once.
             num_env_steps (int): number of environment steps (ignored if 0). The
                 total number of FRAMES will be (``num_env_steps*frame_skip``) for
                 calculating sample efficiency. See alf/environments/wrappers.py
@@ -318,6 +316,7 @@ class TrainerConfig(object):
         self.data_transformer = None  # to be set by Trainer
         self.random_seed = random_seed
         self.num_iterations = num_iterations
+        self.num_parallel_agents = num_parallel_agents
         self.num_env_steps = num_env_steps
         self.unroll_length = unroll_length
         self.unroll_with_grad = unroll_with_grad

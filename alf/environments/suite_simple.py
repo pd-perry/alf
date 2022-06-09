@@ -19,7 +19,8 @@ import numpy as np
 import alf
 from alf.environments import suite_gym
 from alf.environments.simple.noisy_array import NoisyArray
-from bipolar_chains import BipolarChains
+from alf.environments.simple.stochastic_with_risky_branch import StochasticWithRiskyBranch
+from alf.environments.simple.bipolar_chains import BipolarChains
 from alf.environments.gym_wrappers import FrameSkip, FrameStack
 
 
@@ -51,8 +52,12 @@ def load(game,
     """
     if game == "NoisyArray":
         env = NoisyArray(**env_args)
-    else:
+    if game == "StochasticWithRiskyBranch":
+        env = StochasticWithRiskyBranch(**env_args)
+    if game == "BipolarChain":
         env = BipolarChains(**env_args)
+    else:
+        assert False, "No such simple environment!"
     if frame_skip:
         env = FrameSkip(env, frame_skip)
     if frame_stack:
