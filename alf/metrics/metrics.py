@@ -667,6 +667,7 @@ class AverageRegretMetric(AverageEpisodicAggregationMetric):
     """Metric for computing the average episodic regret."""
 
     def __init__(self,
+                 max_episodic_reward,
                  example_time_step: TimeStep,
                  name='AverageRegret',
                  prefix='Metrics',
@@ -686,6 +687,7 @@ class AverageRegretMetric(AverageEpisodicAggregationMetric):
         """
 
         batch_size = alf.nest.get_nest_batch_size(example_time_step)
+        self._max_episodic_reward = max_episodic_reward
         self._tracker = {}
         self._past_episodes = {}
 
@@ -707,11 +709,11 @@ class AverageRegretMetric(AverageEpisodicAggregationMetric):
                            torch.zeros((time_step.step_type.shape)))
         else:
             reward = time_step.reward.reshape(*time_step.step_type.shape, -1)
-            reward = 26 - reward
+            reward = self._max_episodic_reward - reward
             return [reward[..., i] for i in range(reward.shape[-1])]
     
     def _update_tracker(self, time_step):
-        """Updates self._tracker and self._buffer to track the rewards in the current 
+        """Updates self._tracker and self._past_episodes to track the rewards in the current 
         episode and regret for all previous episodes respectively.
         """
         if len(self._tracker.values()) == 0:
@@ -722,6 +724,6 @@ class AverageRegretMetric(AverageEpisodicAggregationMetric):
         for reward in range(len(time_step.is_last())):
             self._tracker[reward] += [time_step.reward[reward]]
             if time_step.is_last()[reward]:
-                self._past_episodes[reward] += [26 - sum(self._tracker[reward])]
+                self._past_episodes[reward] += [self._max_episodic_reward - sum(self._tracker[reward])]
                 self._tracker[reward] = []
     

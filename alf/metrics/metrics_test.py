@@ -19,7 +19,7 @@ from alf.metrics import (EnvironmentSteps, NumberOfEpisodes,
                          AverageReturnMetric, AverageDiscountedReturnMetric,
                          AverageEpisodeLengthMetric, AverageEnvInfoMetric,
                          AverageEpisodicAggregationMetric,
-                         EpisodicStartAverageDiscountedReturnMetric)
+                         EpisodicStartAverageDiscountedReturnMetric, AverageRegretMetric)
 from alf.utils.tensor_utils import to_tensor
 from alf.data_structures import TimeStep, StepType
 
@@ -119,6 +119,8 @@ class THMetricsTest(parameterized.TestCase, unittest.TestCase):
         [('testEnvironmentSteps', EnvironmentSteps, 5, 6, False),
          ('testNumberOfEpisodes', NumberOfEpisodes, 4, 2, False),
          ('testAverageReturn', AverageReturnMetric, 6, 9.0, False),
+         ('testAverageRegret',
+          AverageRegretMetric, 1, 0, False),
          ('testAverageEpisodeLength', AverageEpisodeLengthMetric, 6, 2.0,
           False),
          ('testAverageEnvInfoMetric', AverageEnvInfoMetric, 6,
@@ -140,6 +142,8 @@ class THMetricsTest(parameterized.TestCase, unittest.TestCase):
                 EpisodicStartAverageDiscountedReturnMetric
         ]:
             metric = metric_class(example_time_step=trajectories[0])
+        elif metric_class in [AverageRegretMetric]:
+            metric = metric_class(9, trajectories[0])
         else:
             metric = metric_class()
 

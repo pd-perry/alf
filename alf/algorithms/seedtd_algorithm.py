@@ -36,15 +36,6 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
                  config: TrainerConfig = None,
                  debug_summaries=False,
                  name="SeedTDAlgorithm"):
-        super().__init__(observation_spec=observation_spec,
-                         action_spec=action_spec,
-                         train_state_spec=SeedTDState(),
-                         reward_spec=reward_spec,
-                         env=env,
-                         optimizer=optimizer,
-                         config=config,
-                         debug_summaries=debug_summaries,
-                         name=name)
         """
         Args:
             observation_spec (nested TensorSpec): representing the observations.
@@ -58,6 +49,11 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
             q_network_cls (Callable): is used to construct QNetwork for estimating ``Q(s,a)``
                 given that the action is discrete. Its output spec must be consistent with
                 the discrete action in ``action_spec``.
+            v (float): represents the standard deviation of the noise terms for seed sample.
+            gamma (float): the discount factor for future returns.
+            max_noise_buf_length (int): the maximum length of the noise buffer. This number 
+                can exceed the number of elements that can be in the replay buffer. When this 
+                is the case, the extra noise terms will not be used. 
             env (Environment): The environment to interact with. ``env`` is a
                 batched environment, which means that it runs multiple simulations
                 simultateously. ``env` only needs to be provided to the root
@@ -69,38 +65,36 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
             debug_summaries (bool): True if debug summaries should be created.
             name (str): The name of this algorithm.
         """
+        super().__init__(observation_spec=observation_spec,
+                         action_spec=action_spec,
+                         train_state_spec=SeedTDState(),
+                         reward_spec=reward_spec,
+                         env=env,
+                         optimizer=optimizer,
+                         config=config,
+                         debug_summaries=debug_summaries,
+                         name=name)
+        
+        assert action_spec.is_discrete, (
+            "Only support discrete actions")
+
 
         self.num_actions = action_spec.maximum - action_spec.minimum + 1
         q_network_cls = QNetwork(input_tensor_spec=observation_spec, action_spec=action_spec)
         self._network = q_network_cls.make_parallel(config.num_parallel_agents)
         self._noise = torch.normal(0, v, (max_noise_buf_length, config.num_parallel_agents, config.num_parallel_agents))
         self._noise_index = 0
-
-        env = self._env
+        self._max_noise_buf_length = max_noise_buf_length
+        
         if env is not None:
             metric_buf_size = max(self._config.metric_min_buffer_size,
                                   self._env.batch_size)
             example_time_step = env.reset()
-            self._metrics = [
-                alf.metrics.NumberOfEpisodes(),
-                alf.metrics.EnvironmentSteps(),
-                alf.metrics.AverageReturnMetric(
-                    buffer_size=metric_buf_size,
-                    example_time_step=example_time_step),
-                alf.metrics.AverageEpisodeLengthMetric(
-                    example_time_step=example_time_step,
-                    buffer_size=metric_buf_size),
-                alf.metrics.AverageEnvInfoMetric(
-                    example_time_step=example_time_step,
-                    buffer_size=metric_buf_size),
-                alf.metrics.AverageDiscountedReturnMetric(
-                    buffer_size=metric_buf_size,
-                    example_time_step=example_time_step),
-                alf.metrics.AverageRegretMetric(
+            self._metrics.append(alf.metrics.AverageRegretMetric(
+                    max_episodic_reward=26,
                     buffer_size=metric_buf_size,
                     example_time_step=example_time_step
-                )
-            ]
+                ))
 
         self._gamma = gamma
         self._epsilon_greedy = config.epsilon_greedy
@@ -108,7 +102,7 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
     
     def predict_step(self, info, state: SeedTDState):
         value, _ = self._network(info.observation)
-        action = torch.argmax(value, dim=2)
+        action = torch.argmax(value, dim=-1)
         
         if self._config.num_parallel_agents > 1:
             action = action[:, 0]
@@ -133,6 +127,8 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
         
         action = torch.argmax(value, dim=-1)
         action = torch.diagonal(action, 0)
+
+        self._noise_index = self._noise_index % self._max_noise_buf_length
 
         noise = self._noise[self._noise_index, :, :]
         self._noise_index = self._noise_index + 1
