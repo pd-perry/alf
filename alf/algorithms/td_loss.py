@@ -239,6 +239,8 @@ class TDLoss(nn.Module):
                         _summarize(value[..., i], returns[..., i],
                                    td_error[..., i], suffix)
 
+        import pdb; pdb.set_trace()
+
         if loss.ndim == 3:
             # Multidimensional reward. Average over the critic loss for all dimensions
             loss = loss.mean(dim=2)

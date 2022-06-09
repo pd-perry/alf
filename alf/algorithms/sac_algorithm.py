@@ -267,6 +267,9 @@ class SacAlgorithm(OffPolicyAlgorithm):
             bootstrap_index = torch.sort(bootstrap_index, dim=-1).values
         else:
             bootstrap_index = None
+        
+        self._bootstrap = bootstrap
+
         self._num_parallel_agents = config.num_parallel_agents
         self._num_critic_replicas = num_critic_replicas
         self._calculate_priority = calculate_priority
@@ -970,6 +973,8 @@ class SacAlgorithm(OffPolicyAlgorithm):
                     l(info=info,
                     value=critic_info.critics[:, :, i, ...],
                     target_value=critic_info.target_critic).loss)
+        import pdb; pdb.set_trace()
+
         critic_loss = math_ops.add_n(critic_losses)
 
         if self._calculate_priority:

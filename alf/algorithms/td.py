@@ -14,9 +14,10 @@ import random
 
 import alf
 from alf.algorithms.off_policy_algorithm import OffPolicyAlgorithm
+from alf.algorithms.on_policy_algorithm import OnPolicyAlgorithm
 from alf.networks.relu_mlp import ReluMLP
 from alf.data_structures import AlgStep, LossInfo, namedtuple, StepType, TimeStep
-from alf.utils import value_ops, tensor_utils
+from alf.utils import common, value_ops, tensor_utils
 from alf.utils.losses import element_wise_squared_loss
 
 SeedTDInfo = namedtuple("TInfo", ["target_value", "action", "reward", "value",
@@ -32,10 +33,11 @@ class TD(OffPolicyAlgorithm):
                  action_spec=TensorSpec(()),
                  reward_spec=TensorSpec(()),
                  q_network_cls=QNetwork,
-                 v=0.01,
                  gamma=0.99,
-                 epsilon_greedy=0.1,
+                 epsilon_greedy=0.0,
                  max_episodic_reward=100,
+                 target_update_tau=0.05,
+                 target_update_period=1,
                  bootstrap=False,
                  env=None,
                  optimizer=None,
@@ -55,7 +57,6 @@ class TD(OffPolicyAlgorithm):
             q_network_cls (Callable): is used to construct QNetwork for estimating ``Q(s,a)``
                 given that the action is discrete. Its output spec must be consistent with
                 the discrete action in ``action_spec``.
-            v (float): represents the standard deviation of the noise terms for seed sample.
             gamma (float): the discount factor for future returns.
             max_noise_buf_length (int): the maximum length of the noise buffer. This number 
                 can exceed the number of elements that can be in the replay buffer. When this 
@@ -97,6 +98,8 @@ class TD(OffPolicyAlgorithm):
         self.num_actions = action_spec.maximum - action_spec.minimum + 1
         q_network_cls = QNetwork(input_tensor_spec=observation_spec, action_spec=action_spec)
         self._network = q_network_cls.make_parallel(config.num_parallel_agents)
+        self._target_network = self._network.copy(
+            name='target_networks')
         
         if env is not None:
             metric_buf_size = max(self._config.metric_min_buffer_size,
@@ -109,23 +112,32 @@ class TD(OffPolicyAlgorithm):
                 ))
 
         self._gamma = gamma
-        self._v = v
         self._epsilon_greedy = epsilon_greedy
         self._config = config
-    
-    def predict_step(self, info, state: SeedTDState):
-        if self._config.num_parallel_agents == 1:
-            policy_step = self.rollout_step(info, state)
-            return policy_step._replace(info=())
-        value, _ = self._network(info.observation)
-        action = torch.argmax(value, dim=-1)
-
-        if self._config.num_parallel_agents > 1:
-            action = action[:, 0]
         
-        return AlgStep(output=action,
-                       state=state,
-                       info=SeedTDInfo(action=action))
+        self._update_target = common.TargetUpdater(
+            models=[self._network],
+            target_models=[self._target_network],
+            tau=target_update_tau,
+            period=target_update_period)
+    
+    # def predict_step(self, info, state: SeedTDState):
+    #     value, _ = self._network(info.observation)
+    #     if self._config.num_parallel_agents > 1:
+    #         action =  torch.argmax(value, dim=-1)
+    #         action = torch.diagonal(action, 0)
+    #     else:
+    #         #single agent is good
+    #         action = torch.argmax(value, dim=-1)
+    #         action = action.squeeze()
+            
+
+    #     if self._config.num_parallel_agents > 1:
+    #         action = action[:, 0]
+        
+    #     return AlgStep(output=action,
+    #                    state=state,
+    #                    info=SeedTDInfo(action=action))
     
     def predict_action(self, observation):
         value, _ = self._network(observation)
@@ -139,39 +151,39 @@ class TD(OffPolicyAlgorithm):
 
     def rollout_step(self, inputs: TimeStep, state: SeedTDState):
         value, _ = self._network(inputs.observation)
-        
+
+        #currently no need for epsilon greedy, also does not work
         e = random.randint(0, 100)
         if e > self._epsilon_greedy*100:
-            #single agent does not work
-            action = torch.argmax(value, dim=-1)
             if self._config.num_parallel_agents > 1:
+                action =  torch.argmax(value, dim=-1)
                 action = torch.diagonal(action, 0)
             else:
+                #single agent is good
+                action = torch.argmax(value, dim=-1)
                 action = action.squeeze()
+            
         else:
             action = torch.tensor([random.randint(
                 self._action_spec.minimum, self._action_spec.maximum) for i in range(inputs.observation.shape[0])])
 
-        # action = action.to(torch.int64)
-
-        # ##is gather done with rollout_info.action?
-        # value = value.gather(dim=-1, index=action.unsqueeze(1))
-        # value = torch.squeeze(value)
-
+        #TODO: how to find next state
         return AlgStep(output=action,
                        state=state,
                        info=SeedTDInfo(action=action,
                                   reward=inputs.reward,
                                   step_type=inputs.step_type,
-                                  discount=inputs.discount))
+                                  discount=inputs.discount,
+                                  observation=inputs.observation))
 
     def train_step(self, inputs: TimeStep, state, rollout_info: SeedTDInfo):
-        target_value, _ = self._network(inputs.observation)
+        #inputs.observation is the same as rollout_info.observation
+        #single agent is good
+        target_value, _ = self._target_network(inputs.observation)
         action = torch.argmax(target_value, dim=-1)
         action = action.to(torch.int64)
 
-        ##is gather done with rollout_info.action?
-        target_value = target_value.gather(dim=-1, index=action.unsqueeze(2))
+        target_value = target_value.gather(dim=2, index=action.unsqueeze(2))
         target_value = torch.squeeze(target_value)
 
         value, _ = self._network(inputs.observation)
@@ -179,7 +191,6 @@ class TD(OffPolicyAlgorithm):
         rollout_action = rollout_action.transpose(0, 1)
         value = value.gather(dim=-1, index=rollout_action.unsqueeze(2))
         value = torch.squeeze(value)
-        # import pdb; pdb.set_trace()
 
         return AlgStep(output=action,
                        state=SeedTDState(),
@@ -189,23 +200,20 @@ class TD(OffPolicyAlgorithm):
                                   reward=inputs.reward,
                                   target_value=target_value,
                                   value=value))
+    
+    def after_update(self, root_inputs, info: SeedTDInfo):
+        self._update_target()
 
     def calc_loss(self, info: SeedTDInfo):
-        # import pdb; pdb.set_trace()
-
         if self._config.num_parallel_agents > 1: 
             loss_fn = MultiAgentOneStepTDLoss(gamma=self._gamma, debug_summaries=True)
             loss = loss_fn(info, value=info.value, target_value=info.target_value, noise=None, bootstrap=self._bootstrap)            
         else:
+            # import pdb; pdb.set_trace()
+            # single agent is good
             loss_fn = OneStepTDLoss(gamma=self._gamma, debug_summaries=True)
-            loss = loss_fn(info=info, value=torch.squeeze(info.value), target_value=info.target_value)
+            loss = loss_fn(info=info, value=info.value, target_value=info.target_value)
 
-
-        # returns = value_ops.one_step_discounted_return(
-        # info.reward, info.target_value, info.step_type, info.discount * self._gamma)
-        # returns = tensor_utils.tensor_extend(returns, info.target_value[-1])
-        # # loss = element_wise_squared_loss(returns, torch.squeeze(info.value))
-        # loss1 = element_wise_squared_loss(returns, torch.squeeze(info.value))
         
         """info.value, returns after extending, and loss should be the same shape"""
         if self._debug_summaries:

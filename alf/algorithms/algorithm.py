@@ -1084,8 +1084,8 @@ class Algorithm(AlgorithmInterface):
             summary_utils.summarize_per_category_loss(loss_info)
 
         loss_info = self._aggregate_loss(loss_info, valid_masks, batch_info)
-
-        all_params, gns = self._backward_and_gradient_update(
+        import pdb; pdb.set_trace()
+        all_params = self._backward_and_gradient_update(
             loss_info.loss * weight)
 
         loss_info = loss_info._replace(gns=gns)
@@ -1108,6 +1108,8 @@ class Algorithm(AlgorithmInterface):
                 in the ``loss`` field (i.e. ``loss_info.loss``).
         """
         masks = None
+        import pdb; pdb.set_trace()
+
         if (batch_info is not None and batch_info.importance_weights != ()
                 and self._config.priority_replay):
             if (loss_info.loss == () or loss_info.loss.ndim != 2
@@ -1185,6 +1187,8 @@ class Algorithm(AlgorithmInterface):
 
         if self._grad_scaler is not None:
             self._grad_scaler.update()
+        
+        # import pdb; pdb.set_trace()
 
         all_params = [(self._param_to_name[p], p) for p in all_params]
         return all_params, simple_gns

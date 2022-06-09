@@ -130,7 +130,7 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
         self._update_target = common.TargetUpdater(
             models=[self._network],
             target_models=[self._target_network],
-            tau=target_update_tau,
+            tau=target_update_tau, #TODO: what is this tau
             period=target_update_period)
 
     
@@ -140,27 +140,7 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
         
         if self._config.num_parallel_agents > 1:
             action = action[:, 0]
-        
-
-        # import alf.summary.render as render
-
-        # action_dist, action = self._predict_action(info.observation)
-
-        # with alf.summary.scope("/record"):
-        #     action_img = render.render_action(
-        #         name="action", action=action, action_spec=self._action_spec)
-        #     action_heatmap = render.render_heatmap(
-        #         name="action_heatmap", data=action, val_label="action")
-        #     act_dist_curve = render.render_action_distribution(
-        #         name="action_dist", act_dist=action_dist, action_spec=self._action_spec)
-
-        #     return AlgStep(
-        #         output=action,
-        #         info=dict(
-        #             action_img=action_img,
-        #             action_heatmap=action_heatmap,
-        #             action_dist_curve=act_dist_curve))
-        
+    
         return AlgStep(output=action,
                        state=state,
                        info=SeedTDInfo(action=action))
@@ -220,6 +200,8 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
         rollout_action = rollout_action.transpose(0, 1)
         value = value.gather(dim=-1, index=rollout_action.unsqueeze(2))
         value = torch.squeeze(value)
+
+        # import pdb; pdb.set_trace()
 
         ### [152, 10, 1]
         return AlgStep(output=action,

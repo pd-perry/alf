@@ -69,7 +69,6 @@ class MultiAgentOneStepTDLoss(TDLoss):
             for n in range(target_value.shape[2]):
                 returns_n = self.compute_td_target(info, target_value[:, :, n])
                 returns[:, :, n] = returns_n
-        
         value = value[:-1]
 
         if self._normalize_target:
@@ -114,7 +113,9 @@ class MultiAgentOneStepTDLoss(TDLoss):
             loss = torch.diagonal(torch.reshape(loss, (-1, target_value.shape[2], target_value.shape[2])), dim1=-2, dim2=-1)
             loss = loss.reshape(-1, target_value.shape[1])
         else:
+            import pdb; pdb.set_trace()
             loss = torch.squeeze(loss.sum(dim=-1))
+            # loss = loss.reshape(loss.shape[0], -1)
         
         # import pdb; pdb.set_trace()
 
