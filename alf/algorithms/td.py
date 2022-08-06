@@ -17,8 +17,9 @@ from alf.algorithms.off_policy_algorithm import OffPolicyAlgorithm
 from alf.algorithms.on_policy_algorithm import OnPolicyAlgorithm
 from alf.networks.relu_mlp import ReluMLP
 from alf.data_structures import AlgStep, LossInfo, namedtuple, StepType, TimeStep
-from alf.utils import common, value_ops, tensor_utils
+from alf.utils import common, summary_utils, value_ops, tensor_utils
 from alf.utils.losses import element_wise_squared_loss
+from alf.utils.math_ops import add_ignore_empty
 
 SeedTDInfo = namedtuple("TInfo", ["target_value", "action", "reward", "value",
                              "prev_obs", "step_type", "discount", "noise", "observation"], default_value=())
@@ -110,6 +111,12 @@ class TD(OffPolicyAlgorithm):
                     buffer_size=metric_buf_size,
                     example_time_step=example_time_step
                 ))
+            self._metrics.append(alf.metrics.CumulativeRegretMetric(
+                    max_episodic_reward=max_episodic_reward,
+                    buffer_size=metric_buf_size,
+                    example_time_step=example_time_step
+                ))
+
 
         self._gamma = gamma
         self._epsilon_greedy = epsilon_greedy
@@ -159,7 +166,7 @@ class TD(OffPolicyAlgorithm):
                 action =  torch.argmax(value, dim=-1)
                 action = torch.diagonal(action, 0)
             else:
-                #single agent is good
+                #single agent
                 action = torch.argmax(value, dim=-1)
                 action = action.squeeze()
             
@@ -167,7 +174,7 @@ class TD(OffPolicyAlgorithm):
             action = torch.tensor([random.randint(
                 self._action_spec.minimum, self._action_spec.maximum) for i in range(inputs.observation.shape[0])])
 
-        #TODO: how to find next state
+        #TODO: should value be stored from rollout?
         return AlgStep(output=action,
                        state=state,
                        info=SeedTDInfo(action=action,
@@ -192,10 +199,12 @@ class TD(OffPolicyAlgorithm):
         value = value.gather(dim=-1, index=rollout_action.unsqueeze(2))
         value = torch.squeeze(value)
 
+        # import pdb; pdb.set_trace()
+
         return AlgStep(output=action,
                        state=SeedTDState(),
                        info=SeedTDInfo(discount=inputs.discount,
-                                  step_type=inputs.env_id,
+                                  step_type=inputs.step_type,
                                   action=action,
                                   reward=inputs.reward,
                                   target_value=target_value,
@@ -222,5 +231,66 @@ class TD(OffPolicyAlgorithm):
 
         return LossInfo(loss=loss.loss)
     
+    def _trainable_attributes_to_ignore(self):
+        return ['_target_network']
+    
+    def update_with_gradient(self, loss_info, valid_masks=None, weight=1, batch_info=None):
+        """Overides update_with_gradient from algorithm.py
+        Complete one iteration of training.
 
+        Update parameters using the gradient with respect to ``loss_info``.
+
+        Args:
+            loss_info (LossInfo): loss with shape :math:`(T, B, N)`, where N 
+                is the number of agents (except for ``loss_info.scalar_loss``)
+            valid_masks (Tensor): masks indicating which samples are valid.
+                (``shape=(T, B), dtype=torch.float32``)
+            weight (float): weight for this batch. Loss will be multiplied with
+                this weight before calculating gradient.
+            batch_info (BatchInfo): information about this batch returned by
+                ``ReplayBuffer.get_batch()``
+        Returns:
+            tuple:
+            - loss_info (LossInfo): loss information.
+            - params (list[(name, Parameter)]): list of parameters being updated.
+        """
+
+        if self._debug_summaries:
+            summary_utils.summarize_per_category_loss(loss_info)
+
+        loss_info = self.aggregate_loss(loss_info, valid_masks, batch_info)
+        all_params = self._backward_and_gradient_update(
+                loss_info.loss * weight)
+        return loss_info, all_params
+    
+    def aggregate_loss(self, loss_info, valid_masks=None, batch_info=None):
+        """Computed aggregated loss.
+
+        Args:
+            loss_info (LossInfo): loss with shape :math:`(T, B, N)` (except for
+                ``loss_info.scalar_loss``)
+            valid_masks (Tensor): masks indicating which samples are valid.
+                (``shape=(T, B), dtype=torch.float32``)
+            batch_info (BatchInfo): information about this batch returned by
+                ``ReplayBuffer.get_batch()``
+        Returns:
+            loss_info (LossInfo): loss information, with the aggregated loss
+                in the ``loss`` field (i.e. ``loss_info.loss``).
+        """
+        masks = valid_masks
+        if self._bootstrap:
+            masks = masks.reshape((2, -1, loss_info.loss.shape[-1])) #[T, B, N]
+        else:
+            masks = masks.unsqueeze(-1).repeat(1, 1, loss_info.loss.shape[-1]) #duplicates masks once for each
+        if masks is not None:
+            loss_info = alf.nest.map_structure(
+                lambda l: torch.sum(torch.mean(l * masks, dim=(0, 1))), loss_info)
+        else:
+            loss_info = alf.nest.map_structure(lambda l: torch.mean(l),
+                                               loss_info)
+        if isinstance(loss_info.scalar_loss, torch.Tensor):
+            assert len(loss_info.scalar_loss.shape) == 0
+            loss_info = loss_info._replace(
+                loss=add_ignore_empty(loss_info.loss, loss_info.scalar_loss))
+        return loss_info
     

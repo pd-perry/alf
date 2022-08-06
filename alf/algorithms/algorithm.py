@@ -1084,7 +1084,6 @@ class Algorithm(AlgorithmInterface):
             summary_utils.summarize_per_category_loss(loss_info)
 
         loss_info = self._aggregate_loss(loss_info, valid_masks, batch_info)
-        import pdb; pdb.set_trace()
         all_params = self._backward_and_gradient_update(
             loss_info.loss * weight)
 
@@ -1108,7 +1107,6 @@ class Algorithm(AlgorithmInterface):
                 in the ``loss`` field (i.e. ``loss_info.loss``).
         """
         masks = None
-        import pdb; pdb.set_trace()
 
         if (batch_info is not None and batch_info.importance_weights != ()
                 and self._config.priority_replay):
@@ -1124,6 +1122,7 @@ class Algorithm(AlgorithmInterface):
                 masks = masks / masks.max()
 
         if valid_masks is not None:
+            import pdb; pdb.set_trace()
             if masks is not None:
                 masks = masks * valid_masks
             else:
@@ -1154,6 +1153,12 @@ class Algorithm(AlgorithmInterface):
         optimizers = self.optimizers()
         for optimizer in optimizers:
             optimizer.zero_grad(set_to_none=True)
+
+        if isinstance(loss, torch.Tensor):
+            with record_time("time/backward"):
+                if self._grad_scaler is not None:
+                    loss = self._grad_scaler.scale(loss)
+                loss.backward() #works but is probably not correct
 
         all_params = []
         for optimizer in optimizers:
@@ -1188,7 +1193,6 @@ class Algorithm(AlgorithmInterface):
         if self._grad_scaler is not None:
             self._grad_scaler.update()
         
-        # import pdb; pdb.set_trace()
 
         all_params = [(self._param_to_name[p], p) for p in all_params]
         return all_params, simple_gns
@@ -1372,7 +1376,6 @@ class Algorithm(AlgorithmInterface):
                     assert config.mini_batch_length is not None, (
                         "No mini_batch_length is specified for off-policy training"
                     )
-                    # import pdb; pdb.set_trace()
                     experience, batch_info = self._replay_buffer.get_batch(
                         batch_size=(mini_batch_size *
                                     config.num_updates_per_train_iter),
@@ -1513,6 +1516,7 @@ class Algorithm(AlgorithmInterface):
                     torch.randperm(batch_size, device='cpu'))
             if self._bootstrap:
                 indices = None
+                mini_batch_size = batch_size
             for b in range(0, batch_size, mini_batch_size):
                 is_last_mini_batch = (u == num_updates - 1
                                       and b + mini_batch_size >= batch_size)

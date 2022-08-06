@@ -817,6 +817,7 @@ class SacAlgorithm(OffPolicyAlgorithm):
     def train_step(self, inputs: TimeStep, state: SacState,
                    rollout_info: SacInfo):
         self._training_started = True
+        import pdb; pdb.set_trace()
 
         (action_distribution, action, critics,
          action_state) = self._predict_action(

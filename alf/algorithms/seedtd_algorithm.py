@@ -16,8 +16,9 @@ import alf
 from alf.algorithms.off_policy_algorithm import OffPolicyAlgorithm
 from alf.networks.relu_mlp import ReluMLP
 from alf.data_structures import AlgStep, LossInfo, namedtuple, StepType, TimeStep
-from alf.utils import common, value_ops, tensor_utils
+from alf.utils import common, summary_utils, value_ops, tensor_utils
 from alf.utils.losses import element_wise_squared_loss
+from alf.utils.math_ops import add_ignore_empty
 
 SeedTDInfo = namedtuple("TInfo", ["target_value", "action", "reward", "value",
                              "prev_obs", "step_type", "discount", "noise", "observation"], default_value=())
@@ -34,7 +35,7 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
                  q_network_cls=QNetwork,
                  v=0.01,
                  gamma=0.99,
-                 max_noise_buf_length=1000,
+                 max_noise_buf_length=10000,
                  max_episodic_reward=100,
                  target_update_tau=0.05,
                  target_update_period=1,
@@ -108,9 +109,9 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
         self._network = q_network_cls.make_parallel(config.num_parallel_agents)
         self._target_network = self._network.copy(
             name='target_networks')
-        self._noise = torch.normal(0, v, (max_noise_buf_length, config.num_parallel_agents, config.num_parallel_agents))
+        self._max_noise_buf_length = config.replay_buffer_length
+        self._noise = torch.normal(0, v, (self._max_noise_buf_length, config.num_parallel_agents, config.num_parallel_agents))
         self._noise_index = 0
-        self._max_noise_buf_length = max_noise_buf_length
         
         if env is not None:
             metric_buf_size = max(self._config.metric_min_buffer_size,
@@ -174,7 +175,6 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
 
         noise = self._noise[self._noise_index, :, :]
         self._noise_index = self._noise_index + 1
-
         return AlgStep(output=action,
                        state=state,
                        info=SeedTDInfo(action=action,
@@ -254,3 +254,63 @@ class SeedTDAlgorithm(OffPolicyAlgorithm):
     
     def _trainable_attributes_to_ignore(self):
         return ['_target_network']
+
+    def update_with_gradient(self, loss_info, valid_masks=None, weight=1, batch_info=None):
+        """Overides update_with_gradient from algorithm.py
+        Complete one iteration of training.
+
+        Update parameters using the gradient with respect to ``loss_info``.
+
+        Args:
+            loss_info (LossInfo): loss with shape :math:`(T, B, N)`, where N 
+                is the number of agents (except for ``loss_info.scalar_loss``)
+            valid_masks (Tensor): masks indicating which samples are valid.
+                (``shape=(T, B), dtype=torch.float32``)
+            weight (float): weight for this batch. Loss will be multiplied with
+                this weight before calculating gradient.
+            batch_info (BatchInfo): information about this batch returned by
+                ``ReplayBuffer.get_batch()``
+        Returns:
+            tuple:
+            - loss_info (LossInfo): loss information.
+            - params (list[(name, Parameter)]): list of parameters being updated.
+        """
+
+        if self._debug_summaries:
+            summary_utils.summarize_per_category_loss(loss_info)
+
+        loss_info = self.aggregate_loss(loss_info, valid_masks, batch_info)
+        all_params = self._backward_and_gradient_update(
+                loss_info.loss * weight)
+        return loss_info, all_params
+    
+    def aggregate_loss(self, loss_info, valid_masks=None, batch_info=None):
+        """Computed aggregated loss.
+
+        Args:
+            loss_info (LossInfo): loss with shape :math:`(T, B, N)` (except for
+                ``loss_info.scalar_loss``)
+            valid_masks (Tensor): masks indicating which samples are valid.
+                (``shape=(T, B), dtype=torch.float32``)
+            batch_info (BatchInfo): information about this batch returned by
+                ``ReplayBuffer.get_batch()``
+        Returns:
+            loss_info (LossInfo): loss information, with the aggregated loss
+                in the ``loss`` field (i.e. ``loss_info.loss``).
+        """
+        masks = valid_masks
+        if self._bootstrap:
+            masks = masks.reshape((2, -1, loss_info.loss.shape[-1])) #[T, B, N]
+        else:
+            masks = masks.unsqueeze(-1).repeat(1, 1, loss_info.loss.shape[-1]) #duplicates masks once for each
+        if masks is not None:
+            loss_info = alf.nest.map_structure(
+                lambda l: torch.sum(torch.mean(l * masks, dim=(0, 1))), loss_info)
+        else:
+            loss_info = alf.nest.map_structure(lambda l: torch.mean(l),
+                                               loss_info)
+        if isinstance(loss_info.scalar_loss, torch.Tensor):
+            assert len(loss_info.scalar_loss.shape) == 0
+            loss_info = loss_info._replace(
+                loss=add_ignore_empty(loss_info.loss, loss_info.scalar_loss))
+        return loss_info

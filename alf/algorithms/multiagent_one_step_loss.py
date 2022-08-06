@@ -60,6 +60,7 @@ class MultiAgentOneStepTDLoss(TDLoss):
         """
         bootstrap = self._bootstrap or bootstrap
         returns = torch.zeros((target_value.shape[0]-1, target_value.shape[1], target_value.shape[2]))
+        # import pdb; pdb.set_trace()
         if target_value.shape == info.reward.shape:
             info = info._replace(reward = info.reward[:, :, 0])
             for n in range(target_value.shape[2]):
@@ -107,21 +108,21 @@ class MultiAgentOneStepTDLoss(TDLoss):
         if noise != None:
             returns = returns + noise[:-1, :, :]
         loss = self._td_error_loss_fn(returns.detach(), value)
+        # import pdb; pdb.set_trace()
         if bootstrap:
             # loss = torch.squeeze(loss)
             # loss = torch.diagonal(torch.reshape(loss, (-1, target_value.shape[2], target_value.shape[2])), dim1=-2, dim2=-1)
-            loss = torch.diagonal(torch.reshape(loss, (-1, target_value.shape[2], target_value.shape[2])), dim1=-2, dim2=-1)
-            loss = loss.reshape(-1, target_value.shape[1])
+            loss = torch.reshape(loss, (1, -1, target_value.shape[2], target_value.shape[2]))
+            loss = torch.diagonal(loss, dim1=-2, dim2=-1)
+            # loss = loss.reshape(-1, target_value.shape[1])
         else:
-            import pdb; pdb.set_trace()
-            loss = torch.squeeze(loss.sum(dim=-1))
+            pass
+            # loss = torch.squeeze(loss.sum(dim=-1)) #old default for when batch size = none
             # loss = loss.reshape(loss.shape[0], -1)
-        
-        # import pdb; pdb.set_trace()
 
-        if loss.ndim == 3:
-            # Multidimensional reward. Average over the critic loss for all dimensions
-            loss = loss.mean(dim=2)
+        # if loss.ndim == 3:
+        #     # Multidimensional reward. Average over the critic loss for all dimensions
+        #     loss = loss.mean(dim=2)
 
         # The shape of the loss expected by Algorith.update_with_gradient is
         # [T, B], so we need to augment it with additional zeros.

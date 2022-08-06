@@ -64,6 +64,11 @@ class MetricBuffer(torch.nn.Module):
         assert self._buf.current_size > 0, "no valid latest value!"
         return self._buf.get_batch_by_indices(self._buf.current_pos - 1)
 
+    def sum(self):
+        if self._buf.current_size == 0:  # avoid nan
+            return torch.tensor(0, dtype=self._dtype)
+        return self._buf.get_all()[:self._buf.current_size].sum()
+    
     def clear(self):
         return self._buf.clear()
 
@@ -662,7 +667,6 @@ class AverageRegretMetric(AverageEpisodicAggregationMetric):
                 self._tracker[reward] = []
     
 
-
 class AverageRegretMetric(AverageEpisodicAggregationMetric):
     """Metric for computing the average episodic regret."""
 
@@ -690,6 +694,7 @@ class AverageRegretMetric(AverageEpisodicAggregationMetric):
         self._max_episodic_reward = max_episodic_reward
         self._tracker = {}
         self._past_episodes = {}
+        self._time_step = 0
 
         super(AverageRegretMetric, self).__init__(
             name=name,
@@ -720,6 +725,8 @@ class AverageRegretMetric(AverageEpisodicAggregationMetric):
             self._tracker = {i:[] for i in range(len(time_step.reward))}
         if len(self._past_episodes.values()) == 0:
             self._past_episodes = {i:[] for i in range(len(time_step.reward))}
+        
+        self._time_step += 1
 
         for reward in range(len(time_step.is_last())):
             self._tracker[reward] += [time_step.reward[reward]]
@@ -727,3 +734,206 @@ class AverageRegretMetric(AverageEpisodicAggregationMetric):
                 self._past_episodes[reward] += [self._max_episodic_reward - sum(self._tracker[reward])]
                 self._tracker[reward] = []
     
+
+class CumulativeEpisodicAggregationMetric(metric.StepMetric):
+    """Metric for computing the cumulative episodic regret."""
+
+    def __init__(self,
+                 name="CumulativeEpisodicAggregationMetric",
+                 prefix='Metrics',
+                 dtype=torch.float32,
+                 buffer_size=100,
+                 example_time_step=None):
+        """
+        Args:
+            name (str):
+            prefix (str): a prefix indicating the category of the metric
+            dtype (torch.dtype): dtype of metric values. Should be floating types
+                in order to be averaged.
+            buffer_size (int): number of episodes the metric value will be averaged
+                across
+            example_time_step (nest): an example of the time step where the metric
+               values are extracted from. If ``None``, a zero scalar is used as the
+               example metric value.
+        """
+        super(CumulativeEpisodicAggregationMetric, self).__init__(
+            name=name, dtype=dtype, prefix=prefix)
+        if example_time_step is None:
+            example_metric_value = torch.zeros((), device='cpu')
+        else:
+            example_metric_value = self._extract_metric_values(
+                example_time_step.cpu())
+        
+        self._batch_size = alf.nest.get_nest_batch_size(example_time_step) #TODO: For agent=1 why is this 1 not mini_batch_size
+        self._buffer_size = buffer_size
+        self._initialize(example_metric_value)
+
+        # ``self._current_step`` will be set to zero for the first step, and is
+        # added by one otherwise. Therefore, at the episode end, its value
+        # equals to episode length - 1.
+        self._current_step = torch.zeros(self._batch_size, device='cpu')
+
+    def _extract_metric_values(self, time_step):
+        """Extract metrics from the time step. The return can be a nest."""
+        raise NotImplementedError()
+
+    def _initialize(self, example_metric_value):
+        def _init_buf(val):
+            return MetricBuffer(max_len=self._buffer_size, dtype=self._dtype)
+
+        def _init_acc(val):
+            accumulator = torch.zeros(
+                self._batch_size, dtype=self._dtype, device='cpu')
+            return accumulator
+
+        self._buffer = alf.nest.map_structure(_init_buf, example_metric_value)
+        self._accumulator = alf.nest.map_structure(_init_acc,
+                                                   example_metric_value)
+
+    def call(self, time_step):
+        """Accumulate values from the time step. The values are defined by
+        subclasses' ``_extract_metric_values()``. It will ignore the values of
+        first time steps.
+
+        Args:
+            time_step (alf.data_structures.TimeStep): batched tensor
+        Returns:
+            The arguments, for easy chaining.
+        """
+
+        self._current_step = torch.where(time_step.is_first(),
+                                         torch.zeros_like(self._current_step),
+                                         self._current_step + 1)
+
+        values = self._extract_metric_values(time_step)
+        # import pdb; pdb.set_trace()
+
+        assert all(
+            alf.nest.flatten(
+                alf.nest.map_structure(
+                    lambda val: list(val.shape) == [self._batch_size],
+                    values))), ("Value shape is not correct "
+                                "(only scalar values are supported).")
+
+        is_first = time_step.is_first()
+
+        def _update_accumulator_(acc, val):
+            """In-place update of the accumulators."""
+            # Zero out batch indices where a new episode is starting.
+            # Update with new values; Ignores first step whose reward comes from
+            # the boundary transition of the last step from the previous episode.
+            acc[:] = torch.where(is_first, torch.zeros_like(acc),
+                                 acc + val.to(self._dtype))
+
+        alf.nest.map_structure(_update_accumulator_, self._accumulator, values)
+
+        def _episode_end_aggregate_(path, buf, acc):
+            value = self._extract_and_process_acc_value(
+                acc, last_episode_indices)
+            # If the metric's name ends with '@step', the value will
+            # be further averaged over episode length so that the
+            # result is per-step value.
+            # import pdb; pdb.set_trace()
+            buf.append(value) #TODO: need to divide by the number of agents for value
+            #TODO: ((ep1ag1+ep2ag1)/2+(ep1ag2+ep2ag2)/2)/2 = (ep1ag1 + ep2ag1 + ep1ag2 +ep2ag2)/2/2 [average across episodes or average in the end]
+
+        # Extract the final accumulated value and do customizable processing
+        # via ``_extract_and_process_acc_value``, and add the processed
+        # result to buffer
+        last_episode_indices = torch.where(time_step.is_last())[0]
+
+        if len(last_episode_indices) > 0:
+            alf.nest.py_map_structure_with_path(
+                _episode_end_aggregate_, self._buffer, self._accumulator)
+
+        return time_step
+
+    def _extract_and_process_acc_value(self, acc, last_episode_indices):
+        """Extract the final accumulated value and perform some optional
+        customizable processing.
+        Args:
+            acc (Tensor): batched tensor representing an accumulator
+            last_episode_indices (Tensor): indices representing the location
+                of the position of the last step
+        Returns:
+            The value of the accumulator at the episode end.
+        """
+        return acc[last_episode_indices]
+
+    def result(self):
+        return alf.nest.map_structure(lambda buf: buf.mean(), self._buffer)
+
+    def reset(self):
+        alf.nest.map_structure(lambda buf: buf.clear(), self._buffer)
+        alf.nest.map_structure(lambda acc: acc.fill_(0), self._accumulator)
+
+
+class CumulativeRegretMetric(CumulativeEpisodicAggregationMetric):
+    """Metric for computing the cumulative episodic regret."""
+
+    def __init__(self,
+                 max_episodic_reward,
+                 example_time_step: TimeStep,
+                 name='CumulativeRegretMetric',
+                 prefix='Metrics',
+                 dtype=torch.float32,
+                 buffer_size=1000):
+        """
+        Args:
+            example_time_step (nest): an example of the time step where the metric
+               values are extracted from. If ``None``, a zero scalar is used as the
+               example metric value.
+            name (string): specifies the name of this metric
+            prefix (str): a prefix indicating the category of the metric
+            dtype (torch.dtype): dtype of metric values. Should be floating types
+                in order to be averaged.
+            buffer_size (int): number of episodes the metric value will be averaged
+                across
+        """
+
+        batch_size = alf.nest.get_nest_batch_size(example_time_step)
+        self._max_episodic_reward = max_episodic_reward
+        self._tracker = {}
+        self._past_episodes = {}
+        self._time_step = 0
+
+        super(CumulativeRegretMetric, self).__init__(
+            name=name,
+            dtype=dtype,
+            prefix=prefix,
+            buffer_size=buffer_size,
+            example_time_step=example_time_step)
+
+    def _extract_metric_values(self, time_step):
+        """Accumulate immediate rewards to get episodic regret."""
+        ndim = time_step.step_type.ndim
+        self._update_tracker(time_step)
+
+        # import pdb; pdb.set_trace()
+
+        if time_step.reward.ndim == ndim:
+            #takes the sum of all past episode regrets if time_step is last
+            return torch.where(time_step.is_last(),
+                           torch.tensor([float(torch.sum(torch.tensor(l))) for l in self._past_episodes.values()]),
+                           torch.zeros((time_step.step_type.shape)))
+        else:
+            reward = time_step.reward.reshape(*time_step.step_type.shape, -1)
+            reward = self._max_episodic_reward - reward
+            return [reward[..., i] for i in range(reward.shape[-1])]
+    
+    def _update_tracker(self, time_step):
+        """Updates self._tracker and self._past_episodes to track the rewards in the current 
+        episode and regret for all previous episodes respectively.
+        """
+        if len(self._tracker.values()) == 0:
+            self._tracker = {i:[] for i in range(len(time_step.reward))} #tracker for current episode for each agent
+        if len(self._past_episodes.values()) == 0:
+            self._past_episodes = {i:[] for i in range(len(time_step.reward))} #tracker for regret of past episodes
+        
+        self._time_step += 1
+
+        for agent in range(len(time_step.reward)):
+            self._tracker[agent] += [time_step.reward[agent]]
+            if time_step.is_last()[agent]:
+                self._past_episodes[agent] += [self._max_episodic_reward - sum(self._tracker[agent])]
+                self._tracker[agent] = []
