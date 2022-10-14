@@ -257,8 +257,7 @@ class RLAlgorithm(Algorithm):
             metric_buf_size = max(self._config.metric_min_buffer_size,
                                   self._env.batch_size)
             example_time_step = env.reset()
-            self._metrics = [
-                alf.metrics.NumberOfEpisodes(),
+            self._metrics = [alf.metrics.NumberOfEpisodes(),
                 alf.metrics.EnvironmentSteps(),
                 alf.metrics.AverageReturnMetric(
                     buffer_size=metric_buf_size,
@@ -272,12 +271,16 @@ class RLAlgorithm(Algorithm):
                 alf.metrics.AverageDiscountedReturnMetric(
                     buffer_size=metric_buf_size,
                     example_time_step=example_time_step),
-                alf.metrics.AverageRewardMetric(
-                    buffer_size=metric_buf_size,
-                    example_time_step=example_time_step),
-                alf.metrics.EpisodicStartAverageDiscountedReturnMetric(
-                    buffer_size=metric_buf_size,
-                    example_time_step=example_time_step)
+                # alf.metrics.AverageRewardMetric(
+                #     buffer_size=metric_buf_size,
+                #     example_time_step=example_time_step),
+                # alf.metrics.EpisodicStartAverageDiscountedReturnMetric(
+                #     buffer_size=metric_buf_size,
+                #     example_time_step=example_time_step),
+                # alf.metrics.AverageRegretMetric(
+                #     buffer_size=metric_buf_size,
+                #     example_time_step=example_time_step
+                # )
             ]
         self._async_unroller = None
         self._original_rollout_step = self.rollout_step

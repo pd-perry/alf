@@ -588,3 +588,149 @@ class AverageEnvInfoMetric(AverageEpisodicAggregationMetric):
             return time_step.env_info
         else:
             return {f: time_step.env_info[f] for f in self._fields}
+
+
+class AverageRegretMetric(AverageEpisodicAggregationMetric):
+    """Metric for computing the average regret."""
+
+    def __init__(self,
+                 name='AverageRegret',
+                 prefix='Metrics',
+                 reward_shape=(),
+                 dtype=torch.float32,
+                 batch_size=1,
+                 buffer_size=1000):
+        if reward_shape == ():
+            example_metric_value = torch.zeros((), device='cpu')
+        else:
+            example_metric_value = torch.zeros(
+                reward_shape, device='cpu').reshape(-1)
+            example_metric_value = list(example_metric_value)
+        
+        self._tracker = {}
+        self._past_episodes = {}
+        
+
+        super(AverageRegretMetric, self).__init__(
+            name=name,
+            dtype=dtype,
+            prefix=prefix,
+            batch_size=batch_size,
+            buffer_size=buffer_size,
+            example_metric_value=example_metric_value)
+        
+        self._first_iter = True
+        self._buffer_list = []
+        self._accumulator_list = []
+
+    def _extract_metric_values(self, time_step):
+        """Accumulate immediate rewards to get episodic regret."""
+        ndim = time_step.step_type.ndim
+
+        # if self._first_iter:
+        #     self._buffer_list = [self._buffer] * len(time_step.reward)
+        #     self._accumulator = [self._accumulator] * len(time_step.reward)
+        #     self._first_iter = False
+
+        self._update_tracker(time_step)
+
+        if time_step.reward.ndim == ndim:
+            # if sum(time_step.is_last()) > 0:
+            #     import pdb; pdb.set_trace()
+
+            return torch.where(time_step.is_last(),
+                           torch.tensor([float(sum(l)/max(1, len(l))) for l in self._past_episodes.values()]),
+                           torch.zeros((time_step.step_type.shape)))
+        else:
+            reward = time_step.reward.reshape(*time_step.step_type.shape, -1)
+            reward = 26 - reward
+            return [reward[..., i] for i in range(reward.shape[-1])]
+    
+    def _update_tracker(self, time_step):
+        if len(self._tracker.values()) == 0:
+            self._tracker = {i:[] for i in range(len(time_step.reward))}
+        if len(self._past_episodes.values()) == 0:
+            self._past_episodes = {i:[] for i in range(len(time_step.reward))}
+
+        for reward in range(len(time_step.is_last())):
+            ##put reward into tracker for current episode
+            self._tracker[reward] += [time_step.reward[reward]]
+            ##If at the end of an episode    
+            if time_step.is_last()[reward]:
+                # import pdb; pdb.set_trace()
+                self._past_episodes[reward] += [26 - sum(self._tracker[reward])]
+                self._tracker[reward] = []
+    
+
+
+class AverageRegretMetric(AverageEpisodicAggregationMetric):
+    """Metric for computing the average regret."""
+
+    def __init__(self,
+                 name='AverageRegret',
+                 prefix='Metrics',
+                 reward_shape=(),
+                 dtype=torch.float32,
+                 batch_size=1,
+                 buffer_size=1000):
+        if reward_shape == ():
+            example_metric_value = torch.zeros((), device='cpu')
+        else:
+            example_metric_value = torch.zeros(
+                reward_shape, device='cpu').reshape(-1)
+            example_metric_value = list(example_metric_value)
+        
+        self._tracker = {}
+        self._past_episodes = {}
+        
+
+        super(AverageRegretMetric, self).__init__(
+            name=name,
+            dtype=dtype,
+            prefix=prefix,
+            batch_size=batch_size,
+            buffer_size=buffer_size,
+            example_metric_value=example_metric_value)
+        
+        self._first_iter = True
+        self._buffer_list = []
+        self._accumulator_list = []
+
+    def _extract_metric_values(self, time_step):
+        """Accumulate immediate rewards to get episodic regret."""
+        ndim = time_step.step_type.ndim
+
+        # if self._first_iter:
+        #     self._buffer_list = [self._buffer] * len(time_step.reward)
+        #     self._accumulator = [self._accumulator] * len(time_step.reward)
+        #     self._first_iter = False
+
+        self._update_tracker(time_step)
+
+        if time_step.reward.ndim == ndim:
+            # if sum(time_step.is_last()) > 0:
+            #     import pdb; pdb.set_trace()
+
+            return torch.where(time_step.is_last(),
+                           torch.tensor([float(sum(l)/max(1, len(l))) for l in self._past_episodes.values()]),
+                           torch.zeros((time_step.step_type.shape)))
+        else:
+            reward = time_step.reward.reshape(*time_step.step_type.shape, -1)
+            reward = 26 - reward
+            return [reward[..., i] for i in range(reward.shape[-1])]
+    
+    def _update_tracker(self, time_step):
+        if len(self._tracker.values()) == 0:
+            self._tracker = {i:[] for i in range(len(time_step.reward))}
+        if len(self._past_episodes.values()) == 0:
+            self._past_episodes = {i:[] for i in range(len(time_step.reward))}
+
+        for reward in range(len(time_step.is_last())):
+            ##put reward into tracker for current episode
+            self._tracker[reward] += [time_step.reward[reward]]
+            ##If at the end of an episode    
+            if time_step.is_last()[reward]:
+                # import pdb; pdb.set_trace()
+                self._past_episodes[reward] += [26 - sum(self._tracker[reward])]
+                self._tracker[reward] = []
+    
