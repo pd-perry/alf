@@ -29,11 +29,12 @@ from alf.utils.common import set_random_seed
 from alf.utils.per_process_context import PerProcessContext
 
 __all__ = [
-    'close_env', 'get_raw_observation_spec', 'get_observation_spec',
-    'get_action_spec', 'get_reward_spec', 'get_env', 'parse_config'
+    'close_env', 'close_marl_env', 'get_raw_observation_spec', 'get_observation_spec',
+    'get_action_spec', 'get_reward_spec', 'get_env', 'get_multi_agent_env', 'parse_config'
 ]
 
 _env = None
+_marl_env = None
 _transformed_observation_spec = None
 
 
@@ -262,6 +263,50 @@ def get_env():
         _env = create_environment(seed=seed)
     return _env
 
+def get_multi_agent_env(num_agents):
+    """Get the global training environment.
+
+    Note: you need to finish all the config for environments and
+    TrainerConfig.random_seed before using this function.
+
+    Note: random seed will be initialized in this function.
+
+    Returns:
+        AlfEnvironment
+    """
+    global _marl_env
+
+    if _marl_env is None:
+        if _is_parsing:
+            random_seed = get_config_value('TrainerConfig.random_seed')
+        else:
+            # We construct a TrainerConfig object here so that the value
+            # configured through gin-config can be properly retrieved.
+            train_config = TrainerConfig(root_dir='')
+            random_seed = train_config.random_seed
+        # We have to call set_random_seed() here because we need the actual
+        # random seed to call create_environment.
+        seed = set_random_seed(random_seed)
+        # In case when running in multi-process mode, the number of environments
+        # per process need to be adjusted (divided by number of processes).
+        adjust_config_by_multi_process_divider(
+            PerProcessContext().ddp_rank,
+            PerProcessContext().num_processes)
+        _marl_env = [create_environment(seed=seed) for _ in range(num_agents)]
+    return _marl_env
+
+def close_marl_env():
+    """Close the global environment.
+
+    This function will be automatically called by ``RLTrainer``.
+    """
+    global _marl_env
+    global _transformed_observation_spec
+    if _marl_env is not None:
+        for i in range(len(_marl_env)):
+            _marl_env[i].close()
+    _marl_env = None
+    _transformed_observation_spec = None
 
 def close_env():
     """Close the global environment.

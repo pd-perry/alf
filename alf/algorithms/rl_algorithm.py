@@ -19,12 +19,11 @@ from collections import namedtuple
 import os
 import time
 import torch
-from typing import Callable, Optional
+from typing import Callable
 from absl import logging
 
 import alf
 from alf.algorithms.algorithm import Algorithm
-from alf.algorithms.async_unroller import AsyncUnroller
 from alf.experience_replayers.replay_buffer import ReplayBuffer
 from alf.data_structures import (AlgStep, Experience, make_experience,
                                  TimeStep, BasicRolloutInfo, BasicRLInfo)
@@ -34,28 +33,21 @@ from alf.utils.distributed import data_distributed_when
 from alf.tensor_specs import TensorSpec
 from .config import TrainerConfig
 
-
 def adjust_replay_buffer_length(config: TrainerConfig,
                                 num_earliest_frames_ignored: int = 0) -> int:
     """Adjust the replay buffer length for whole replay buffer training.
-
     Normally we just respect the replay buffer length set in the
     config. However, for a specific case where the user asks to do
     "whole replay buffer training", we need to adjust the user
     provided length to achieve desired behavior.
-
     Args:
-
         config: The trainer config of the training session
         num_earliest_frames_ignored: ignore the earliest so many
            frames from the buffer when sampling or gathering. This is
            typically required when FrameStacker is used. See
            ``ReplayBuffer`` for details.
-
     Returns:
-
         An integer representing the adjusted replay buffer length.
-
     """
     if not config.whole_replay_buffer_training:
         return config.replay_buffer_length
@@ -91,11 +83,8 @@ def adjust_replay_buffer_length(config: TrainerConfig,
 @alf.configurable
 class RLAlgorithm(Algorithm):
     """Abstract base class for RL Algorithms.
-
     ``RLAlgorithm`` provide basic functions and generic interface for rl algorithms.
-
     The key interface functions are:
-
     1. ``predict_step()``: one step of computation of action for evaluation.
     2. ``rollout_step()``: one step of computation for rollout. It is
        used for collecting experiences during training. Different from
@@ -128,7 +117,8 @@ class RLAlgorithm(Algorithm):
        (e.g., on/off-policy, replay buffers, etc). Other things might also be
        possible as long as they should be done once every training iteration.
     """
-
+    _combined_metrics = None
+    _buffer = None
     def __init__(self,
                  observation_spec,
                  action_spec,
@@ -138,8 +128,9 @@ class RLAlgorithm(Algorithm):
                  rollout_state_spec=None,
                  is_on_policy=None,
                  reward_weights=None,
-                 bootstrap_index=None,
                  env=None,
+                 marl: bool = False,
+                 agent_id = None,
                  config: TrainerConfig = None,
                  optimizer=None,
                  overwrite_policy_output=False,
@@ -163,10 +154,6 @@ class RLAlgorithm(Algorithm):
             reward_weights (None|list[float]): this is only used when the reward is
                 multidimensional. If not None, the weighted sum of rewards is
                 the reward for training. Otherwise, the sum of rewards is used.
-            bootstrap_index (None|Tensor): indicates whether the algorithm runs
-                the bootstrap procedure. If tensor, the shape will be 
-                (num_envs, max_buffer_length) of elements between 0 and
-                max_buffer_length - 1, inclusive. 
             env (Environment): The environment to interact with. ``env`` is a
                 batched environment, which means that it runs multiple
                 simulations simultaneously. Running multiple environments in
@@ -188,13 +175,14 @@ class RLAlgorithm(Algorithm):
             rollout_state_spec=rollout_state_spec,
             predict_state_spec=predict_state_spec,
             is_on_policy=is_on_policy,
-            bootstrap_index=bootstrap_index,
             optimizer=optimizer,
             config=config,
             debug_summaries=debug_summaries,
             name=name)
 
         self._env = env
+        self._marl = marl
+        self._agent_id = agent_id
         self._observation_spec = observation_spec
         self._action_spec = action_spec
         assert reward_spec.ndim <= 1, "reward_spec must be rank-0 or rank-1!"
@@ -242,7 +230,6 @@ class RLAlgorithm(Algorithm):
                         f'value {minimum_initial_collect_steps} because '
                         'whole_replay_buffer_training is on.')
                     config.initial_collect_steps = minimum_initial_collect_steps
-
             self.set_replay_buffer(self._env.batch_size, replay_buffer_length,
                                    config.priority_replay)
 
@@ -263,32 +250,31 @@ class RLAlgorithm(Algorithm):
             metric_buf_size = max(self._config.metric_min_buffer_size,
                                   self._env.batch_size)
             example_time_step = env.reset()
-            self._metrics = [alf.metrics.NumberOfEpisodes(),
+            self._metrics = [
+                alf.metrics.NumberOfEpisodes(),
                 alf.metrics.EnvironmentSteps(),
                 alf.metrics.AverageReturnMetric(
                     buffer_size=metric_buf_size,
-                    example_time_step=example_time_step),
+                    example_time_step=example_time_step,
+                    name='AverageReturn' + str(self._agent_id)),
                 alf.metrics.AverageEpisodeLengthMetric(
                     example_time_step=example_time_step,
-                    buffer_size=metric_buf_size),
+                    buffer_size=metric_buf_size,),
                 alf.metrics.AverageEnvInfoMetric(
                     example_time_step=example_time_step,
                     buffer_size=metric_buf_size),
                 alf.metrics.AverageDiscountedReturnMetric(
                     buffer_size=metric_buf_size,
-                    example_time_step=example_time_step),
-                # alf.metrics.AverageRewardMetric(
-                #     buffer_size=metric_buf_size,
-                #     example_time_step=example_time_step),
-                # alf.metrics.EpisodicStartAverageDiscountedReturnMetric(
-                #     buffer_size=metric_buf_size,
-                #     example_time_step=example_time_step),
-                # alf.metrics.AverageRegretMetric(
-                #     buffer_size=metric_buf_size,
-                #     example_time_step=example_time_step
-                # )
+                    example_time_step=example_time_step,),
+                alf.metrics.AverageRewardMetric(
+                    buffer_size=metric_buf_size,
+                    example_time_step=example_time_step,
+                    name='AverageReward' + str(self._agent_id)),
+                alf.metrics.EpisodicStartAverageDiscountedReturnMetric(
+                    buffer_size=metric_buf_size,
+                    example_time_step=example_time_step)
             ]
-        self._async_unroller = None
+
         self._original_rollout_step = self.rollout_step
         self.rollout_step = self._rollout_step
         self._overwrite_policy_output = overwrite_policy_output
@@ -323,7 +309,6 @@ class RLAlgorithm(Algorithm):
         """Update reward weights; this function can be called at any step during
         training. Once called, the updated reward weights are expected to be used
         by the algorithm in the next.
-
         Args:
             reward_weights (Tensor): a tensor that is compatible with
                 ``self._reward_spec``.
@@ -334,7 +319,6 @@ class RLAlgorithm(Algorithm):
 
     def has_multidim_reward(self):
         """Check if the algorithm uses multi-dim reward or not.
-
         Returns:
             bool: True if the reward has multiple dims.
         """
@@ -347,7 +331,6 @@ class RLAlgorithm(Algorithm):
 
     def get_step_metrics(self):
         """Get step metrics that used for generating summaries against
-
         Returns:
             list[StepMetric]: step metrics ``EnvironmentSteps`` and
             ``NumberOfEpisodes``.
@@ -356,7 +339,6 @@ class RLAlgorithm(Algorithm):
 
     def get_metrics(self):
         """Returns the metrics monitored by this driver.
-
         Returns:
             list[StepMetric]:
         """
@@ -381,19 +363,10 @@ class RLAlgorithm(Algorithm):
                         torch.mean(r),
                         average_over_summary_interval=True)
 
-    @alf.configurable(whitelist=["custom_summary"])
-    def summarize_rollout(
-            self,
-            experience: Experience,
-            custom_summary: Optional[Callable[[Experience], None]] = None):
+    def summarize_rollout(self, experience):
         """Generate summaries for rollout.
-
         Args:
-            experience: experience collected from ``rollout_step()``.
-            custom_summary: when specified it is a function that will be called every
-               time when this ``summarize_rollout`` hook is called. This provides
-               a convenient way for the user to extend ``summarize_rollout`` from
-               ALF configs.
+            experience (Experience): experience collected from ``rollout_step()``.
         """
         if self._debug_summaries:
             summary_utils.summarize_action(experience.action,
@@ -408,19 +381,14 @@ class RLAlgorithm(Algorithm):
                 summary_utils.summarize_distribution("rollout_action_dist",
                                                      field[0])
 
-        if custom_summary is not None:
-            custom_summary(experience)
-
     def summarize_train(self, experience, train_info, loss_info, params):
         """Generate summaries for training & loss info after each gradient update.
-
         For on-policy algorithms, ``experience.rollout_info`` is empty, while for
         off-policy algorithms, it is available. However, the statistics in both
         ``train_info`` and ``experience.rollout_info` are for the data sampled
         from the replay buffer. They store the update-to-date model outputs and
         the historical model outputs (on the past rollout data), respectively.
         They do not represent the model outputs on the current on-going rollout.
-
         Args:
             experience (Experience): experiences collected from the most recent
                 ``unroll()`` or from a replay buffer. It also has been used for
@@ -444,7 +412,7 @@ class RLAlgorithm(Algorithm):
             if len(field) == 1:
                 summary_utils.summarize_distribution("action_dist", field[0])
 
-    def summarize_metrics(self):
+    def summarize_metrics(self): #TODO: THIS FUNCTION SUMMARIZED ALL METRICS
         """Generate summaries for metrics ``AverageEpisodeLength``,
         ``AverageReturn``, etc.
         """
@@ -458,14 +426,27 @@ class RLAlgorithm(Algorithm):
                 metric.gen_summaries(
                     train_step=alf.summary.get_global_counter(),
                     step_metrics=step_metrics)
+    
+    def summarize_combined_metrics(self):
+        """Generate summaries for metrics ``AverageEpisodeLength``,
+        ``AverageReturn``, etc.
+        """
+        if not alf.summary.should_record_summaries():
+            return
+
+        if self._metrics:
+            for metric in self._combined_metrics:
+                step_metrics = () if alf.get_config_value(
+                    "TrainerConfig.use_wandb") else self._metrics[:2]
+                metric.gen_summaries(
+                    train_step=alf.summary.get_global_counter(),
+                    step_metrics=step_metrics)
 
     # Subclass may override predict_step() to allow more efficient implementation
     def predict_step(self, inputs: TimeStep, state):
         r"""Predict for one step of observation.
-
         This only used for evaluation. So it only need to perform computations
         for generating action distribution.
-
         Args:
             time_step (TimeStep): Current observation and other inputs for computing
                 action.
@@ -489,119 +470,10 @@ class RLAlgorithm(Algorithm):
 
     @common.mark_rollout
     @data_distributed_when(lambda algorithm: algorithm.on_policy)
-    def unroll(self, unroll_length: int):
-        if self._config.async_unroll:
-            return self._async_unroll(unroll_length)
-        else:
-            return self._sync_unroll(unroll_length)
-
-    def _async_unroll(self, unroll_length: int):
-        if self._async_unroller is None:
-            # env is no longer needed for rollout in the main process.
-            # Close it to release resources.
-            # self._env.close()
-            self._async_unroller = AsyncUnroller(self, self._config)
-        elif alf.summary.get_global_counter(
-        ) % self._config.unroll_parameter_update_period == 0:
-            self._async_unroller.update_parameter(self)
-
-        assert not self._overwrite_policy_output, (
-            "async_unroll does not "
-            "support overwrite_policy_output")
-        assert not self.on_policy, ("async_unroll does not support on-policy "
-                                    "training")
-
-        if self._current_transform_state is None:
-            self._current_transform_state = self.get_initial_transform_state(
-                self._env.batch_size)
-        trans_state = self._current_transform_state
-
-        experience_list = []
-        original_reward_list = []
-        env_step_time = 0.
-        store_exp_time = 0.
-        step_time = 0.
-        max_step_time = 0.
-        qsize = self._async_unroller.get_queue_size()
-        unroll_results = self._async_unroller.gather_unroll_results(
-            unroll_length, self._config.max_unroll_length)
-        if self._rollout_info_spec is None and len(unroll_results) > 0:
-            self._rollout_info_spec = dist_utils.extract_spec(
-                unroll_results[0].policy_step.info)
-
-        for unroll_result in unroll_results:
-            time_step = unroll_result.time_step
-            policy_step = unroll_result.policy_step
-            policy_state = unroll_result.policy_state
-            # Some data transformers contain parameters which are updated during
-            # rollout (e.g. ObservationNormalizer and RewardNormalizer with
-            # update_mode="rollout"). So we need to redo the transform_timestep
-            # so that those parameters are correctly updated.
-            transformed_time_step, trans_state = self.transform_timestep(
-                time_step, trans_state)
-
-            env_step_time += unroll_result.env_step_time
-            step_time += unroll_result.step_time
-            max_step_time = max(max_step_time, unroll_result.step_time)
-
-            store_exp_time += self._process_unroll_step(
-                policy_step, policy_step.output, time_step,
-                transformed_time_step, policy_state, experience_list,
-                original_reward_list)
-
-        alf.summary.scalar("time/unroll_env_step", env_step_time)
-        alf.summary.scalar("time/unroll_store_exp", store_exp_time)
-        if unroll_length == 0:
-            alf.summary.scalar("async_unroll/unroll_length",
-                               float(len(unroll_results)))
-        alf.summary.scalar("async_unroll/queue_size", qsize)
-        if not unroll_results:
-            return None
-
-        alf.summary.scalar("time/avg_unroll_step_time",
-                           step_time / len(unroll_results))
-        alf.summary.scalar("time/max_unroll_step_time", max_step_time)
-        original_reward = alf.nest.utils.stack_nests(original_reward_list)
-        self.summarize_reward("rollout_reward/original_reward",
-                              original_reward)
-
-        experience = alf.nest.utils.stack_nests(experience_list)
-        experience = experience._replace(
-            rollout_info=dist_utils.params_to_distributions(
-                experience.rollout_info, self._rollout_info_spec))
-
-        self._current_transform_state = common.detach(trans_state)
-
-        return experience
-
-    def _process_unroll_step(self, policy_step, action, time_step,
-                             transformed_time_step, policy_state,
-                             experience_list, original_reward_list):
-        self.observe_for_metrics(time_step.cpu())
-        exp = make_experience(time_step.cpu(), policy_step, policy_state)
-
-        store_exp_time = 0
-        if not self.on_policy:
-            t0 = time.time()
-            self.observe_for_replay(exp)
-            store_exp_time = time.time() - t0
-
-        exp_for_training = Experience(
-            time_step=transformed_time_step,
-            action=action,
-            rollout_info=dist_utils.distributions_to_params(policy_step.info),
-            state=policy_state)
-
-        experience_list.append(exp_for_training)
-        original_reward_list.append(time_step.reward)
-        return store_exp_time
-
-    def _sync_unroll(self, unroll_length: int):
+    def unroll(self, unroll_length: int, marl:bool=False):
         r"""Unroll ``unroll_length`` steps using the current policy.
-
         Because the ``self._env`` is a batched environment. The total number of
         environment steps is ``self._env.batch_size * unroll_length``.
-
         Args:
             unroll_length (int): number of steps to unroll.
         Returns:
@@ -641,6 +513,10 @@ class RLAlgorithm(Algorithm):
             next_time_step = self._env.step(action)
             env_step_time += time.time() - t0
 
+            self.observe_for_metrics(time_step.cpu()) #TODO: THIS STEP ADDS TIMESTEP TO METRIC
+            if marl:
+                self.observe_combined_metrics(time_step.cpu())
+
             # For typical cases, there is no impact since the action at the
             # current time step is the same as the prev_action of the next
             # time step. In some cases, for example, for data collection,
@@ -650,10 +526,23 @@ class RLAlgorithm(Algorithm):
             if self._overwrite_policy_output:
                 policy_step = policy_step._replace(
                     output=next_time_step.prev_action)
-            store_exp_time += self._process_unroll_step(
-                policy_step, action, time_step, transformed_time_step,
-                policy_state, experience_list, original_reward_list)
 
+            exp = make_experience(time_step.cpu(), policy_step, policy_state)
+
+            if not self.on_policy:
+                t0 = time.time()
+                self.observe_for_replay(exp, marl)
+                store_exp_time += time.time() - t0
+
+            exp_for_training = Experience(
+                time_step=transformed_time_step,
+                action=action,
+                rollout_info=dist_utils.distributions_to_params(
+                    policy_step.info),
+                state=policy_state)
+
+            experience_list.append(exp_for_training)
+            original_reward_list.append(time_step.reward)
             time_step = next_time_step
             policy_state = policy_step.state
 
@@ -679,9 +568,7 @@ class RLAlgorithm(Algorithm):
 
     def train_iter(self):
         """Perform one iteration of training.
-
         Users may choose to implement their own ``train_iter()``.
-
         Returns:
             int: the number of samples being trained on (including duplicates).
         """
@@ -730,8 +617,7 @@ class RLAlgorithm(Algorithm):
 
         unrolled = False
         if (alf.summary.get_global_counter() >=
-                self._rl_train_after_update_steps
-                and (unroll_length > 0 or self._config.unroll_length == 0)
+                self._rl_train_after_update_steps and unroll_length > 0
                 and (self._config.num_env_steps == 0
                      or self.get_step_metrics()[1].result() <
                      self._config.num_env_steps)):
@@ -748,18 +634,12 @@ class RLAlgorithm(Algorithm):
                     with alf.summary.record_if(lambda: self.
                                                _need_to_summarize_rollout):
                         experience = self.unroll(unroll_length)
-                        if experience:
-                            self.summarize_rollout(experience)
-                            self.summarize_metrics()
+                        self.summarize_rollout(experience)
+                        self.summarize_metrics()
                     self._need_to_summarize_rollout = False
 
-        # replay buffer may not have been created for two different reasons:
-        # 1. in online RL training (``has_offline`` is False), unroll is not
-        # performed yet. In this case, we simply return from here.
-        # 2. in offline RL training case (``has_offline`` is True), there is no
-        # online replay buffer. In this case, we move on and continue with the
-        # offline training.
-        if self._replay_buffer is None and not self.has_offline:
+        # replay buffer may not have been created yet because unroll is nor performed yet.
+        if self._replay_buffer is None:
             return 0
 
         self.train()
@@ -777,13 +657,119 @@ class RLAlgorithm(Algorithm):
 
         # For now, we only return the steps of the primary algorithm's training
         return steps
+    
+
+    def get_multi_agent_buffer(self, sample_exp):
+        """Get the global replay buffer shared among all agents.
+
+        Returns:
+            AlfEnvironment
+        """
+        self._experience_spec = dist_utils.extract_spec(sample_exp, from_dim=1)
+        self._exp_contains_step_type = (getattr(sample_exp, 'step_type', None)
+                                            is not None)
+        if RLAlgorithm._buffer is None:
+            if (self._replay_buffer_num_envs is None
+                    or self._replay_buffer_max_length is None
+                    or self._prioritized_sampling is None):
+                # Do not even create the replay buffer if the required
+                # parameters are not set by set_replay_buffer
+                common.warning_once(
+                    'Experience replayer must be initialized first by calling '
+                    'set_replay_buffer() before observe_for_replay() is called! '
+                    'Skipping ...')
+                return
+
+            exp_spec = dist_utils.to_distribution_param_spec(self._experience_spec)
+            RLAlgorithm._buffer = ReplayBuffer(
+                data_spec=exp_spec,
+                num_environments=self._replay_buffer_num_envs,
+                max_length=self._replay_buffer_max_length,
+                prioritized_sampling=self._prioritized_sampling,
+                num_earliest_frames_ignored=self._num_earliest_frames_ignored,
+                name=f'{self._name}_replay_buffer')
+        if self._replay_buffer is None:
+            self._replay_buffer = RLAlgorithm._buffer
+            self._observers.append(lambda exp: self._replay_buffer.add_batch(
+            exp, exp.env_id))
+    
+    def get_combined_metrics(self):
+        """Create combined metrics for all agents."""
+        if RLAlgorithm._combined_metrics is None:
+            metric_buf_size = max(self._config.metric_min_buffer_size,
+                                  self._env.batch_size)
+            example_time_step = self._env.reset()
+            RLAlgorithm._combined_metrics = [alf.metrics.AverageReturnMetric(
+                    buffer_size=metric_buf_size,
+                    example_time_step=example_time_step,)]
+        self._combined_metrics = RLAlgorithm._combined_metrics
+
+    def observe_combined_metrics(self, time_step):
+        for metric in self._combined_metrics:
+            metric(time_step)
+
+    def MARL_unroll(self):
+        config: TrainerConfig = self._config
+
+        if self._combined_metrics is None:
+            self.get_combined_metrics()
+
+        
+        if not config.update_counter_every_mini_batch:
+            alf.summary.increment_global_counter()
+
+        unroll_length = self._remaining_unroll_length_fraction + self._config.unroll_length
+        self._remaining_unroll_length_fraction = unroll_length - int(
+            unroll_length)
+        unroll_length = int(unroll_length)
+
+        if alf.summary.should_record_summaries():
+            self._need_to_summarize_rollout = True
+
+        unrolled = False
+        if (alf.summary.get_global_counter() >=
+                self._rl_train_after_update_steps and unroll_length > 0
+                and (self._config.num_env_steps == 0
+                     or self.get_step_metrics()[1].result() <
+                     self._config.num_env_steps)):
+            unrolled = True
+            with torch.set_grad_enabled(config.unroll_with_grad):
+                with record_time("time/unroll"):
+                    self.eval()
+                    # The period of performing unroll may not be an integer
+                    # divider of config.summary_interval if config.unroll_length is not an
+                    # interger. In order to make sure the summary for unroll is
+                    # still written out about every summary_interval steps, we
+                    # need to remember whether summary has been written between
+                    # two unrolls.
+                    with alf.summary.record_if(lambda: self.
+                                               _need_to_summarize_rollout):
+                        experience = self.unroll(unroll_length, marl=True)
+                        self.summarize_rollout(experience)
+                        if self._marl:
+                            self.summarize_combined_metrics()
+                        self.summarize_metrics()
+                    self._need_to_summarize_rollout = False
+            return 
+
+    def MARL_train_iter(self):
+        # replay buffer may not have been created yet because unroll is nor performed yet.
+        if self._replay_buffer is None:
+            return 0
+        batch_size = self._config.mini_batch_size
+        batch_length = self._config.mini_batch_length
+        self.train()
+        steps = self.train_from_replay_buffer(update_global_counter=True, 
+                                            marl=False, 
+                                            indices=self._replay_buffer.generate_indices(batch_size,batch_length))
+        # For now, we only return the steps of the primary algorithm's training
+        return steps
 
     def load_offline_replay_buffer(self, untransformed_observation_spec):
         """Load replay buffer from a replay buffer checkpoint.
         It will construct a replay buffer (``self._offline_replay_buffer``)
         holding the data loaded from the checkpoint, which can be used for
         model training, e.g. in the hybrid training pipeline or in other ways.
-
         Args:
             untransformed_observation_spec (nested TensorSpec): spec that
                 describes the strcuture of the utransformed observations.
@@ -895,7 +881,6 @@ class RLAlgorithm(Algorithm):
         ``replay_buffer_checkpoint`` will be added to the
         ``_offline_replay_buffer``.
         TODO: a non-sequential version.
-
         Args:
             exp_spec (nested spec): spec for the ``Experience`` structure.
             exp_spec_wo_info (nested spec): spec for the ``Experience`` structure
@@ -980,9 +965,3 @@ class RLAlgorithm(Algorithm):
                     "Unsupported outer rank %s of `exp`" % outer_rank)
 
         _load_data(exp)
-
-    def finish_train(self):
-        """Finish training and release resources if necessary."""
-        if self._async_unroller is not None:
-            self._async_unroller.close()
-            self._async_unroller = None

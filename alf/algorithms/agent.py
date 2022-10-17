@@ -63,6 +63,8 @@ class Agent(RLAlgorithm):
                  enforce_entropy_target=False,
                  entropy_target_cls=None,
                  optimizer=None,
+                 marl=False,
+                 agent_id=None,
                  debug_summaries=False,
                  name="AgentAlgorithm"):
         """Args:
@@ -143,12 +145,19 @@ class Agent(RLAlgorithm):
             rl_observation_spec = [
                 rl_observation_spec, goal_generator.action_spec
             ]
-
         ## 2. rl algorithm
+        #TODO: REMOVE TMP
+        from alf.optimizers import AdamTF
+        optimizer = AdamTF(lr=3e-4)
         rl_algorithm = rl_algorithm_cls(
             observation_spec=rl_observation_spec,
             action_spec=action_spec,
             reward_spec=reward_spec,
+            marl=marl,
+            agent_id=agent_id,
+            actor_optimizer=optimizer,
+            critic_optimizer=optimizer,
+            alpha_optimizer=optimizer,
             config=config,
             debug_summaries=debug_summaries)
         agent_helper.register_algorithm(rl_algorithm, "rl")
@@ -196,6 +205,8 @@ class Agent(RLAlgorithm):
             is_on_policy=rl_algorithm.on_policy,
             env=env,
             config=config,
+            marl=marl,
+            agent_id=agent_id,
             debug_summaries=debug_summaries,
             name=name,
             **agent_helper.state_specs())

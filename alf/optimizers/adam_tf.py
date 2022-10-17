@@ -133,7 +133,7 @@ class AdamTF(Optimizer):
                 amsgrad = group['amsgrad']
 
                 state = self.state[p]
-
+                # import pdb; pdb.set_trace()
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 if amsgrad:
                     max_exp_avg_sq = state['max_exp_avg_sq']

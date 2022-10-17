@@ -77,6 +77,8 @@ class StepMetric(nn.Module):
 
         if not (isinstance(result, dict) or alf.nest.is_namedtuple(result)):
             result = {self.name: result}
+        
+        # import pdb; pdb.set_trace()
 
         def _gen_summary(name, res):
             tag = os.path.join(prefix, name)

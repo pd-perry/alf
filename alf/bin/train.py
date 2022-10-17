@@ -132,7 +132,10 @@ def _train(root_dir, rank=0, world_size=1):
     trainer_conf = policy_trainer.TrainerConfig(
         root_dir=root_dir, conf_file=conf_file)
 
-    if trainer_conf.ml_type == 'rl':
+    if not trainer_conf.num_agents is None:
+        ddp_rank = rank if world_size > 1 else -1
+        trainer = policy_trainer.MARLTrainer(trainer_conf, ddp_rank)
+    elif trainer_conf.ml_type == 'rl':
         ddp_rank = rank if world_size > 1 else -1
         trainer = policy_trainer.RLTrainer(trainer_conf, ddp_rank)
     elif trainer_conf.ml_type == 'sl':

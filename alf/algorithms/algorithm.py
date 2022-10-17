@@ -66,7 +66,6 @@ class Algorithm(AlgorithmInterface):
                  rollout_state_spec=None,
                  predict_state_spec=None,
                  is_on_policy=None,
-                 bootstrap_index=None,
                  optimizer=None,
                  config: TrainerConfig = None,
                  debug_summaries=False,
@@ -76,12 +75,10 @@ class Algorithm(AlgorithmInterface):
         optimizer. One can also specify an optimizer for a set of parameters
         and/or modules using add_optimizer. You can find out which parameter is
         handled by which optimizer using ``get_optimizer_info()``.
-
         A requirement for this optimizer structure to work is that there is no
         algorithm which is a submodule of a non-algorithm module. Currently,
         this is not checked by the framework. It's up to the user to make sure
         this is true.
-
         Args:
             train_state_spec (nested TensorSpec): for the network state of
                 ``train_step()``.
@@ -92,10 +89,6 @@ class Algorithm(AlgorithmInterface):
                 ``predict_step()``. If None, it's assume to be same as
                 ``rollout_state_spec``.
             is_on_policy (None|bool):
-            bootstrap_index (None|Tensor): indicates whether the algorithm runs
-                the bootstrap procedure. If tensor, the shape will be 
-                (num_envs, max_buffer_length) of elements between 0 and
-                max_buffer_length - 1, inclusive. 
             optimizer (None|Optimizer): The default optimizer for
                 training. See comments above for detail.
             config (TrainerConfig): config for training. ``config`` only needs to
@@ -161,13 +154,11 @@ class Algorithm(AlgorithmInterface):
 
         self._is_rnn = len(alf.nest.flatten(train_state_spec)) > 0
 
-        self._bootstrap_index = bootstrap_index
-
         self._debug_summaries = debug_summaries
         self._default_optimizer = optimizer
         self._optimizers = []
         self._module_to_optimizer = {}
-        self._path = ''
+        self._path = ''       
         if optimizer:
             self._optimizers.append(optimizer)
         self._is_on_policy = is_on_policy
@@ -229,7 +220,6 @@ class Algorithm(AlgorithmInterface):
 
     def need_full_rollout_state(self):
         """Whether ``AlgStep.state`` from ``rollout_step`` should be full.
-
         If True, it means that ``rollout_step()`` should return the complete state
         for ``train_step()``.
         """
@@ -239,7 +229,6 @@ class Algorithm(AlgorithmInterface):
     def use_rollout_state(self):
         """If True, when off-policy training, the RNN states will be taken
         from the replay buffer; otherwise they will be set to 0.
-
         In the case of True, the ``train_state_spec`` of an algorithm should always
         be a subset of the ``rollout_state_spec``.
         """
@@ -247,9 +236,7 @@ class Algorithm(AlgorithmInterface):
 
     def activate_ddp(self, rank: int):
         """Prepare the Algorithm with DistributedDataParallel wrapper
-
         Note that Algorithm does not need to remember the rank of the device.
-
         Args:
             rank (int): DDP wrapper needs to know on which GPU device this
                 module's parameters and buffers are supposed to be.
@@ -265,18 +252,14 @@ class Algorithm(AlgorithmInterface):
     def force_params_visible_to_parent(self) -> bool:
         """Whether the already optimizer-handled parameters are seen by the paranet
         algorithm.
-
         Normally, when the parameters of this algorithm is handled by its
         optimizer, ``_setup_optimizers_`` will prevent the parent algorithm's
         optimizer to see and more importantly, handle them. Setting this value
         to true will force the parameters to be seen and handled by the parent
         algorithm, even if they are already handled by this algorithm.
-
         Note that parameters ignored by ``_trainable_attributes_to_ignore()``
         will stay invisible to the parent algorithm.
-
         It is by default False, and can be changed with the following setter.
-
         """
         return self._force_params_visible_to_parent
 
@@ -289,7 +272,6 @@ class Algorithm(AlgorithmInterface):
                           max_length: int,
                           prioritized_sampling=False):
         """Set the parameters for the replay buffer.
-
         Args:
             num_envs (int): the total number of environments from all batched
                 environments.
@@ -305,7 +287,6 @@ class Algorithm(AlgorithmInterface):
         """Initialize the replay buffer for the very first time given a
         sample experience which is used to infer the specs for the buffer
         initialization.
-
         Args:
             sample_exp (nested Tensor):
         """
@@ -335,9 +316,8 @@ class Algorithm(AlgorithmInterface):
         self._observers.append(lambda exp: self._replay_buffer.add_batch(
             exp, exp.env_id))
 
-    def observe_for_replay(self, exp):
+    def observe_for_replay(self, exp, marl=False):
         r"""Record an experience in a replay buffer.
-
         Args:
             exp (nested Tensor): exp (nested Tensor): The shape is
                 :math:`[B, \ldots]`, where :math:`B` is the batch size of the
@@ -352,15 +332,17 @@ class Algorithm(AlgorithmInterface):
                     exp.state, self.train_state_spec, value_to_match=()))
 
         if self._replay_buffer is None:
-            self._set_replay_buffer(exp)
+            if marl:
+                self.get_multi_agent_buffer(exp)
+            else:
+                self._set_replay_buffer(exp)
 
         exp = dist_utils.distributions_to_params(exp)
         for observer in self._observers:
             observer(exp)
 
-    def observe_for_metrics(self, time_step):
+    def observe_for_metrics(self, time_step): 
         r"""Observe a time step for recording environment metrics.
-
         Args:
             time_step (TimeStep): the current time step during ``unroll()``.
         """
@@ -369,17 +351,14 @@ class Algorithm(AlgorithmInterface):
 
     def transform_timestep(self, time_step, state):
         """Transform time_step.
-
         ``transform_timestep`` is called for all raw time_step got from
         the environment before passing to ``predict_step`` and ``rollout_step``. For
         off-policy algorithms, the replay buffer stores raw time_step. So when
         experiences are retrieved from the replay buffer, they are tranformed by
         ``transform_timestep`` in ``OffPolicyAlgorithm`` before passing to
         ``_update()``.
-
         The transformation should be stateless. By default, only observation
         is transformed.
-
         Args:
             time_step (TimeStep or Experience): time step
             state (nested Tensor): state of the transformer(s)
@@ -390,9 +369,7 @@ class Algorithm(AlgorithmInterface):
 
     def transform_experience(self, experience):
         """Transform an Experience structure.
-
         This is used on the experience data retrieved from replay buffer.
-
         Args:
             experience (Experience): the experience retrieved from replay buffer.
                 Note that ``experience.batch_info``, ``experience.replay_buffer``
@@ -407,7 +384,6 @@ class Algorithm(AlgorithmInterface):
         The default implementation of this function only summarizes params
         (with grads) and the loss. An algorithm can override this for additional
         summaries. See ``RLAlgorithm.summarize_train()`` for an example.
-
         Args:
             experience (nested Tensor): samples used for the most recent
                 ``update_with_gradient()``. By default it's not summarized.
@@ -443,11 +419,9 @@ class Algorithm(AlgorithmInterface):
     def add_optimizer(self, optimizer: torch.optim.Optimizer,
                       modules_and_params):
         """Add an optimizer.
-
         Note that the modules and params contained in ``modules_and_params``
         should still be the attributes of the algorithm (i.e., they can be
         retrieved in ``self.children()`` or ``self.parameters()``).
-
         Args:
             optimizer (Optimizer): optimizer
             modules_and_params (list of Module or Parameter): The modules and
@@ -463,17 +437,13 @@ class Algorithm(AlgorithmInterface):
         """Algorithms can overwrite this function to provide which class
         member names should be ignored when getting trainable parameters, to
         avoid being assigned to the default optimizer.
-
         For example, if in your algorithm you've created a member ``self._vars``
         pointing to the parameters of a module for some purpose, you can avoid
         assigning an optimizer to ``self._vars`` (because the module will be assigned
         with one) by doing:
-
         .. code-block:: python
-
             def _trainable_attributes_to_ignore(self):
                 return ["_vars"]
-
         Returns:
             list[str]: a list of attribute names to ignore.
         """
@@ -517,7 +487,6 @@ class Algorithm(AlgorithmInterface):
 
     def get_param_name(self, param):
         """Get the name of the parameter.
-
         Returns:
             string: the name if the parameter can be found; otherwise ``None``.
         """
@@ -525,7 +494,6 @@ class Algorithm(AlgorithmInterface):
 
     def _setup_optimizers(self):
         """Setup the param groups for optimizers.
-
         Returns:
             list: a list of parameters not handled by any optimizers under this
             algorithm.
@@ -540,10 +508,8 @@ class Algorithm(AlgorithmInterface):
 
     def _setup_optimizers_(self, param_to_name):
         """Setup the param groups for optimizers.
-
         Returns:
             tuple:
-
             - list of parameters not handled by any optimizers under this algorithm
             - list of parameters handled under this algorithm
         """
@@ -554,7 +520,6 @@ class Algorithm(AlgorithmInterface):
         new_params = dict()
         handled = dict()
         duplicate_error = "Parameter %s is handled by multiple optimizers."
-
         def _add_params_to_optimizer(params, opt):
             existing_params = set(_get_optimizer_params(opt))
             added_param_list = list(
@@ -619,7 +584,6 @@ class Algorithm(AlgorithmInterface):
 
     def optimizers(self, recurse=True, include_ignored_attributes=False):
         """Get all the optimizers used by this algorithm.
-
         Args:
             recurse (bool): If True, including all the sub-algorithms
             include_ignored_attributes (bool): If True, still include all child
@@ -627,6 +591,7 @@ class Algorithm(AlgorithmInterface):
         Returns:
             list: list of ``Optimizer``s.
         """
+        # import pdb; pdb.set_trace()
         opts = copy.copy(self._optimizers)
         if recurse:
             children = self._get_children(include_ignored_attributes)
@@ -638,10 +603,8 @@ class Algorithm(AlgorithmInterface):
 
     def get_optimizer_info(self):
         """Return the optimizer info for all the modules in a string.
-
         TODO: for a subalgorithm that's an ignored attribute, its optimizer info
         won't be obtained.
-
         Returns:
             str: the json string of the information about all the optimizers.
         """
@@ -663,16 +626,13 @@ class Algorithm(AlgorithmInterface):
                     parameters=sorted(
                         [self._param_to_name[p] for p in parameters])))
         json_pretty_str_info = json.dumps(obj=optimizer_info, indent=2)
-
         return json_pretty_str_info
 
     def get_unoptimized_parameter_info(self):
         """Return the information about the parameters not being optimized.
-
         Note: the difference of this with the parameters contained in the optimizer
         'None' from ``get_optimizer_info()`` is that ``get_optimizer_info()`` does not
         traverse all the parameters (e.g., parameters in list, tuple, dict, or set).
-
         Returns:
             str: path of all parameters not being optimized
         """
@@ -721,7 +681,6 @@ class Algorithm(AlgorithmInterface):
     @property
     def processed_experience_spec(self):
         """Spec for processed experience.
-
         Returns:
             TensorSpec: Spec for the experience returned by ``preprocess_experience()``.
         """
@@ -772,18 +731,15 @@ class Algorithm(AlgorithmInterface):
     def state_dict(self, destination=None, prefix='', visited=None):
         """Get state dictionary recursively, including both model state
         and optimizers' state (if any). It can handle a number of special cases:
-
         - graph with cycle: save all the states and avoid infinite loop
         - parameter sharing: save only one copy of the shared module/param
         - optimizers: save the optimizers for all the (sub-)algorithms
-
         Args:
             destination (OrderedDict): the destination for storing the state.
             prefix (str): a string to be added before the name of the items
                 (modules, params, algorithms etc) as the key used in the
                 state dictionary.
             visited (set): a set keeping track of the visited objects.
-
         Returns:
             OrderedDict: the dictionary including both model state and optimizers'
             state (if any).
@@ -821,7 +777,6 @@ class Algorithm(AlgorithmInterface):
     @common.add_method(nn.Module)
     def load_state_dict(self, state_dict, strict=True):
         """Load state dictionary for the algorithm.
-
         Args:
             state_dict (dict): a dict containing parameters and persistent buffers.
             strict (bool, optional): whether to strictly enforce that the keys
@@ -829,7 +784,6 @@ class Algorithm(AlgorithmInterface):
                 ``torch.nn.Module.state_dict`` function. If ``strict=True``, will
                 keep lists of missing and unexpected keys; if ``strict=False``,
                 missing/unexpected keys will be omitted. (Default: ``True``)
-
         Returns:
             namedtuple:
             - missing_keys: a list of str containing the missing keys.
@@ -899,7 +853,6 @@ class Algorithm(AlgorithmInterface):
         submodule in ``torch.nn.Module.state_dict``. In rare cases, subclasses
         can achieve class-specific behavior by overriding this method with custom
         logic.
-
         Args:
             destination (dict): a dict where state will be stored.
             prefix (str): the prefix for parameters and buffers used in this
@@ -935,12 +888,9 @@ class Algorithm(AlgorithmInterface):
         For state dicts without metadata, ``local_metadata`` is empty.
         Subclasses can achieve class-specific backward compatible loading using
         the version number at ``local_metadata.get("version", None)``.
-
         .. note::
-
             ``state_dict`` is not the same object as the input ``state_dict`` to
             ``torch.nn.Module.load_state_dict``. So it can be modified.
-
         Args:
             state_dict (dict): a dict containing parameters and
                 persistent buffers.
@@ -1062,9 +1012,7 @@ class Algorithm(AlgorithmInterface):
                              weight=1.0,
                              batch_info=None):
         """Complete one iteration of training.
-
         Update parameters using the gradient with respect to ``loss_info``.
-
         Args:
             loss_info (LossInfo): loss with shape :math:`(T, B)` (except for
                 ``loss_info.scalar_loss``)
@@ -1084,7 +1032,8 @@ class Algorithm(AlgorithmInterface):
             summary_utils.summarize_per_category_loss(loss_info)
 
         loss_info = self._aggregate_loss(loss_info, valid_masks, batch_info)
-        all_params = self._backward_and_gradient_update(
+
+        all_params, gns = self._backward_and_gradient_update(
             loss_info.loss * weight)
 
         loss_info = loss_info._replace(gns=gns)
@@ -1094,7 +1043,6 @@ class Algorithm(AlgorithmInterface):
 
     def _aggregate_loss(self, loss_info, valid_masks=None, batch_info=None):
         """Computed aggregated loss.
-
         Args:
             loss_info (LossInfo): loss with shape :math:`(T, B)` (except for
                 ``loss_info.scalar_loss``)
@@ -1107,7 +1055,6 @@ class Algorithm(AlgorithmInterface):
                 in the ``loss`` field (i.e. ``loss_info.loss``).
         """
         masks = None
-
         if (batch_info is not None and batch_info.importance_weights != ()
                 and self._config.priority_replay):
             if (loss_info.loss == () or loss_info.loss.ndim != 2
@@ -1122,7 +1069,6 @@ class Algorithm(AlgorithmInterface):
                 masks = masks / masks.max()
 
         if valid_masks is not None:
-            import pdb; pdb.set_trace()
             if masks is not None:
                 masks = masks * valid_masks
             else:
@@ -1139,26 +1085,22 @@ class Algorithm(AlgorithmInterface):
 
     def _backward_and_gradient_update(self, loss):
         """Do backward and gradient update to all the trainable parameters.
-
         Args:
             loss (Tensor): an aggregated scalar loss
         Returns:
             params (list[(name, Parameter)]): list of parameters being updated.
         """
+        
         unhandled = self._setup_optimizers()
+
         unhandled = [self._param_to_name[p] for p in unhandled]
         assert not unhandled, ("'%s' has some modules/parameters do not have "
                                "optimizer: %s" % (self.name, unhandled))
-
+        # import pdb; pdb.set_trace()
         optimizers = self.optimizers()
+        # import pdb; pdb.set_trace()
         for optimizer in optimizers:
             optimizer.zero_grad(set_to_none=True)
-
-        if isinstance(loss, torch.Tensor):
-            with record_time("time/backward"):
-                if self._grad_scaler is not None:
-                    loss = self._grad_scaler.scale(loss)
-                loss.backward() #works but is probably not correct
 
         all_params = []
         for optimizer in optimizers:
@@ -1188,11 +1130,14 @@ class Algorithm(AlgorithmInterface):
                 # as the pytorch tutorial https://pytorch.org/docs/stable/notes/amp_examples.html#gradient-clipping
                 self._grad_scaler.step(optimizer)
             else:
+                # import pdb; pdb.set_trace()
+                # print(self._agent_id)
+                # if self._agent_id == 1:
+                #     import pdb; pdb.set_trace()
                 optimizer.step()
 
         if self._grad_scaler is not None:
             self._grad_scaler.update()
-        
 
         all_params = [(self._param_to_name[p], p) for p in all_params]
         return all_params, simple_gns
@@ -1200,7 +1145,6 @@ class Algorithm(AlgorithmInterface):
     # Subclass may override calc_loss() to allow more sophisticated loss
     def calc_loss(self, info):
         """Calculate the loss at each step for each sample.
-
         Args:
             info (nest): information collected for training. It is batched
                 from each ``AlgStep.info`` returned by ``rollout_step()``
@@ -1219,13 +1163,11 @@ class Algorithm(AlgorithmInterface):
     # offline related functions
     def train_step_offline(self, inputs, state, rollout_info, pre_train=False):
         """Perform one step of offline training computation.
-
         It is called to calculate output for every time step for a batch of
         experience from offline replay buffer. It also needs to generate
         necessary information for ``calc_loss_offline()``.
         By default, this function calls ``train_step`` as its default
         implementation.
-
         Args:
             inputs (nested Tensor): inputs for train.
             state (nested Tensor): consistent with ``train_state_spec``.
@@ -1257,7 +1199,6 @@ class Algorithm(AlgorithmInterface):
         """Calculate the hybrid loss at each step for each sample.
         By default, this function calls ``calc_loss`` as its default
         implementation.
-
         Args:
             info_offline (nest): information collected for training from the
                 offline training branch. It is returned by
@@ -1282,11 +1223,9 @@ class Algorithm(AlgorithmInterface):
         """Train given the info collected from ``unroll()``. This function can
         be called by any child algorithm that doesn't have the unroll logic but
         has a different training logic with its parent (e.g., off-policy).
-
         Args:
             experience (Experience): collected during ``unroll()``.
             train_info (nest): ``AlgStep.info`` returned by ``rollout_step()``.
-
         Returns:
             int: number of steps that have been trained
         """
@@ -1303,11 +1242,10 @@ class Algorithm(AlgorithmInterface):
         return torch.tensor(alf.nest.get_nest_shape(experience)).prod()
 
     @common.mark_replay
-    def train_from_replay_buffer(self, update_global_counter=False):
+    def train_from_replay_buffer(self, update_global_counter=False, marl=False, indices=None):
         """This function can be called by any algorithm that has its own
         replay buffer configured. There are several parameters specified in
         ``self._config`` that will affect how the training is performed:
-
         - ``initial_collect_steps``: only start replaying and training after so
           many time steps have been stored in the replay buffer
         - ``mini_batch_size``: the batch size of a minibatch
@@ -1317,13 +1255,11 @@ class Algorithm(AlgorithmInterface):
         - ``num_updates_per_train_iter``: how many updates to perform in each
           training iteration. Its behavior might be different depending on the
           value of ``config.whole_replay_buffer_training``:
-
           - If ``True``, each update will scan over the entire buffer to get
             chopped minibatches and a random experience shuffling is performed
             before each update;
           - If ``False``, each update will sample a new minibatch from the replay
             buffer.
-
         - ``whole_replay_buffer_training``: a very special case where all data in
           the replay buffer will be used for training (e.g., PPO). In this case,
           for every update in ``num_updates_per_train_iter``, the data will
@@ -1331,13 +1267,10 @@ class Algorithm(AlgorithmInterface):
           ``buffer_size//(mini_batch_size * mini_batch_length)`` "mini-updates".
           If ``mini_batch_length`` is None, then ``unroll_length`` will be used
           for this calculation.
-
-
         If ``has_offline`` is True (e.g., by  specifying a valid replay
         buffer path to ``offline_buffer_dir`` in the config), it will
         enter the hybrid training mode, i.e., by sampling from both the
         original replay buffer and the offline buffer for training.
-
         Args:
             update_global_counter (bool): controls whether this function changes
                 the global counter for summary. If there are multiple
@@ -1380,10 +1313,10 @@ class Algorithm(AlgorithmInterface):
                         batch_size=(mini_batch_size *
                                     config.num_updates_per_train_iter),
                         batch_length=config.mini_batch_length,
-                        index=self._bootstrap_index)
+                        marl=marl,
+                        indices=indices)
                     num_updates = 1
             return experience, batch_info, num_updates, mini_batch_size
-
         if not self.has_offline:
             experience, batch_info, num_updates, mini_batch_size = _replay()
             with record_time("time/train"):
@@ -1425,21 +1358,15 @@ class Algorithm(AlgorithmInterface):
                 offline_experience, offline_batch_info = self._offline_replay_buffer.get_batch(
                     batch_size=(
                         mini_batch_size * config.num_updates_per_train_iter),
-                    batch_length=config.mini_batch_length,
-                    index=self._bootstrap_index)
-                num_updates = 1
-
-        with record_time("time/train"):
-            return self._train_experience(
-                experience,
-                batch_info,
-                num_updates,
-                mini_batch_size,
-                config.mini_batch_length,
-                (config.update_counter_every_mini_batch
-                 and update_global_counter),
-                whole_replay_buffer_training=config.
-                whole_replay_buffer_training)
+                    batch_length=config.mini_batch_length)
+            # train hybrid
+            with record_time("time/offline_train"):
+                return self._train_hybrid_experience(
+                    experience, batch_info, offline_experience,
+                    offline_batch_info, num_updates, mini_batch_size,
+                    config.mini_batch_length,
+                    (config.update_counter_every_mini_batch
+                     and update_global_counter))
 
     def _train_experience(self,
                           experience,
@@ -1514,10 +1441,8 @@ class Algorithm(AlgorithmInterface):
                 # error: https://github.com/pytorch/pytorch/issues/59756
                 indices = alf.nest.utils.convert_device(
                     torch.randperm(batch_size, device='cpu'))
-            if self._bootstrap:
-                indices = None
-                mini_batch_size = batch_size
             for b in range(0, batch_size, mini_batch_size):
+
                 is_last_mini_batch = (u == num_updates - 1
                                       and b + mini_batch_size >= batch_size)
                 do_summary = (is_last_mini_batch
@@ -1533,6 +1458,7 @@ class Algorithm(AlgorithmInterface):
                                             mini_batch_size,
                                             update_counter_every_mini_batch,
                                             do_summary)
+
                 exp, train_info, loss_info, params = self._update(
                     mini_batch_list[0],
                     mini_batch_info_list[0],
@@ -1588,7 +1514,7 @@ class Algorithm(AlgorithmInterface):
 
         length = alf.nest.get_nest_size(experience, dim=1)
         mini_batch_length = (mini_batch_length or length)
-        if not whole_replay_buffer_training and not self._bootstrap:
+        if not whole_replay_buffer_training:
             assert mini_batch_length == length, (
                 "mini_batch_length (%s) is "
                 "different from length (%s). Not supported." %
@@ -1643,17 +1569,11 @@ class Algorithm(AlgorithmInterface):
                 # mini_batch_length, the temporal correlation can be better
                 # captured.
                 pass
-        # if self._bootstrap:
-        #     #if bootstrap, the second dimension needs to have mini_batch_size * num_agents shape
-        #     batch_size = alf.nest.get_nest_batch_size(experience)
-        #     experience = alf.nest.map_structure(
-        #         lambda x: x.reshape(batch_size * self._bootstrap_index.shape[0], mini_batch_length, *x.shape[2:]),
-        #         experience)
-        else:
-            experience = alf.nest.map_structure(
-                lambda x: x.reshape(-1, mini_batch_length, *x.shape[2:]),
-                experience)
-        # import pdb; pdb.set_trace()
+
+        experience = alf.nest.map_structure(
+            lambda x: x.reshape(-1, mini_batch_length, *x.shape[2:]),
+            experience)
+
         batch_size = alf.nest.get_nest_batch_size(experience)
 
         return (experience, processed_exp_spec, batch_info, length,
@@ -1725,13 +1645,11 @@ class Algorithm(AlgorithmInterface):
     @data_distributed_when(lambda algorithm: not algorithm.on_policy)
     def _compute_train_info_and_loss_info(self, experience):
         """Compute train_info and loss_info based on the experience.
-
         This function has data distributed support if the algorithm is
         off-policy. This means that if the Algorithm instance has DDP activated
         and is off-policy, the output will have a hook to synchronize gradients
         across processes upon the call to the backward() that involes the output
         (i.e. train_info and loss_info).
-
         """
         length = alf.nest.get_nest_size(experience, dim=0)
         if self._config.temporally_independent_train_step or length == 1:
@@ -1817,7 +1735,6 @@ class Algorithm(AlgorithmInterface):
         """Extract mini-batch and the corresponding batch info from experience.
         This function also convert the mini-batch to be time-major and to be on
         the default device.
-
         Args:
             indices (tensor|None): indices of the shape [batch_size]. Typically
                 it is a randomly permuted version of the sequential indices
@@ -1846,21 +1763,12 @@ class Algorithm(AlgorithmInterface):
         alf.summary.enable_summary(do_summary)
 
         if indices is None:
-            if self._bootstrap_index != None:
-                batch_indices = slice(
-                    mini_batch_start_position,
-                    min(batch_size, mini_batch_start_position + mini_batch_size*self._bootstrap_index.shape[0]))
-            else:
-                batch_indices = slice(
-                    mini_batch_start_position,
-                    min(batch_size, mini_batch_start_position + mini_batch_size))
+            batch_indices = slice(
+                mini_batch_start_position,
+                min(batch_size, mini_batch_start_position + mini_batch_size))
         else:
-            if self._bootstrap_index != None:
-                batch_indices = indices[mini_batch_start_position:min(
-                batch_size, mini_batch_start_position + mini_batch_size*self._bootstrap_index.shape[0])]
-            else:
-                batch_indices = indices[mini_batch_start_position:min(
-                    batch_size, mini_batch_start_position + mini_batch_size)]
+            batch_indices = indices[mini_batch_start_position:min(
+                batch_size, mini_batch_start_position + mini_batch_size)]
 
         def _make_time_major(nest):
             """Put the time dim to axis=0."""
@@ -1872,9 +1780,7 @@ class Algorithm(AlgorithmInterface):
             if experience is not None:
                 batch = alf.nest.map_structure(lambda x: x[batch_indices],
                                                experience)
-                #TODO: COMPARE IF TAKING 500 AS BATCH SIZE MATCHES UP, should be [500, 2]
                 if batch_info:
-                    # import pdb; pdb.set_trace()
                     binfo = alf.nest.map_structure(
                         lambda x: x[batch_indices] if isinstance(
                             x, torch.Tensor) else x, batch_info)
@@ -1962,11 +1868,9 @@ class Algorithm(AlgorithmInterface):
                     if exp:
                         self.summarize_train(exp, train_info, loss_info,
                                              params)
-                    if offline_exp:
-                        with alf.summary.scope("offline"):
-                            self.summarize_train(offline_exp,
-                                                 offline_train_info,
-                                                 offline_loss_info, None)
+                    with alf.summary.scope("offline"):
+                        self.summarize_train(offline_exp, offline_train_info,
+                                             offline_loss_info, None)
 
         train_steps = 2 * batch_size * mini_batch_length * num_updates
         return train_steps
@@ -2002,10 +1906,10 @@ class Algorithm(AlgorithmInterface):
             context = common.pretrain_context()
         else:
             context = nullcontext()
-
         with context:
             offline_train_info = self._collect_train_info_offline(
                 offline_experience, self._pre_train)
+
             offline_loss_info = self.calc_loss_offline(offline_train_info,
                                                        self._pre_train)
 
@@ -2051,17 +1955,12 @@ class Algorithm(AlgorithmInterface):
             # for now, there is no need to do a hybrid after update
             self.after_update(experience.time_step, train_info)
 
-        loss_info = alf.nest.map_structure(torch.mean, loss_info)
-        offline_loss_info = alf.nest.map_structure(torch.mean,
-                                                   offline_loss_info)
-
         return experience, train_info, loss_info, offline_experience, \
                 offline_train_info, offline_loss_info, params
 
 
 class Loss(Algorithm):
     """Algorithm that uses its input as loss.
-
     It can be subclassed to customize calc_loss().
     """
 

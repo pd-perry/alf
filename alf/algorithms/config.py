@@ -29,6 +29,7 @@ class TrainerConfig(object):
                  project=None,
                  conf_name=None,
                  wandb_name=None,
+                 num_agents=None,
                  algorithm_ctor=None,
                  data_transformer_ctor=None,
                  random_seed=None,
@@ -311,6 +312,7 @@ class TrainerConfig(object):
         self.project = project
         self.conf_name = conf_name
         self.wandb_name = wandb_name
+        self.num_agents = num_agents
         self.algorithm_ctor = algorithm_ctor
         self.data_transformer_ctor = data_transformer_ctor
         self.data_transformer = None  # to be set by Trainer

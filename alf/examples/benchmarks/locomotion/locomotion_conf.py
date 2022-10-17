@@ -23,7 +23,7 @@ from alf.utils.math_ops import clipped_exp
 from alf.optimizers import AdamTF
 
 alf.config(
-    "create_environment", num_parallel_environments=1, env_name="Ant-v3")
+    "create_environment", num_parallel_environments=1, env_name="Humanoid-v2")
 
 hidden_layers = (256, ) * 2
 
@@ -45,10 +45,10 @@ alf.config(
     "TrainerConfig",
     temporally_independent_train_step=True,
     use_rollout_state=True,
-    use_wandb=True,
+    use_wandb=False,
     async_eval=True,
-    entity="runjerry",
-    project="Actor-Bayes-Critic",
+    # entity="runjerry",
+    # project="Actor-Bayes-Critic",
     initial_collect_steps=10000,
     unroll_length=1,
     mini_batch_length=2,

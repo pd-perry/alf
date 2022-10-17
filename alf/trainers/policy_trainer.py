@@ -83,7 +83,6 @@ class _TrainerProgress(nn.Module):
 
     def set_progress(self, value: float):
         """Manually set the current progress.
-
         Args:
             value: a float number in [0, 1]
         """
@@ -97,12 +96,9 @@ class _TrainerProgress(nn.Module):
 
 def _visualize_alf_tree(module: Algorithm):
     """Generate a graphviz graph of the module tree structure.
-
     This is useful to visualize the hierarchy of the current AFL algorithm.
-
     Args:
         module: An ALF algorithm.
-
     Returns:
         A graphviz directed graph that can be rendered as pdf.
     """
@@ -148,11 +144,8 @@ def _visualize_alf_tree(module: Algorithm):
 
         def _get_func_name(match_obj):
             """Further extract the function name from the <...> representation.
-
             For example, if the match_obj corresponds to a string like below:
-
                 <built-in method relu_ of type object at 0x7ff7a790f620>
-
             This function extracts "relu_" out of it.
             """
             # Such representation can start with either "bound method",
@@ -235,7 +228,6 @@ def _visualize_alf_tree(module: Algorithm):
 
 class Trainer(object):
     """Base class for trainers.
-
     Trainer is responsible for creating algorithm and dataset/environment, setting up
     summary, checkpointing, running training iterations, and evaluating periodically.
     """
@@ -244,7 +236,6 @@ class Trainer(object):
 
     def __init__(self, config: TrainerConfig, ddp_rank: int = -1):
         """
-
         Args:
             config: configuration used to construct this trainer
             ddp_rank: process (and also device) ID of the process, if the
@@ -349,7 +340,6 @@ class Trainer(object):
     def progress():
         """A static method that returns the current training progress, provided
         that only one trainer will be used for training.
-
         Returns:
             float: a number in :math:`[0,1]` indicating the training progress.
         """
@@ -361,7 +351,7 @@ class Trainer(object):
 
     @staticmethod
     def current_env_steps():
-        return Trainer._trainer_progress._env_steps
+        return Trainer._trainer_progress._env_step
 
     def _train(self):
         """Perform training according the the learning type. """
@@ -380,7 +370,6 @@ class Trainer(object):
             def _markdownify(paragraph):
                 return "    ".join(
                     (os.linesep + paragraph).splitlines(keepends=True))
-
             common.summarize_config()
             alf.summary.text('commandline', ' '.join(sys.argv))
             alf.summary.text(
@@ -442,7 +431,6 @@ class Trainer(object):
 
     def _restore_checkpoint(self, checkpointer):
         """Retore from saved checkpoint.
-
             Args:
                 checkpointer (Checkpointer):
         """
@@ -474,7 +462,6 @@ class RLTrainer(Trainer):
 
     def __init__(self, config: TrainerConfig, ddp_rank: int = -1):
         """
-
         Args:
             config (TrainerConfig): configuration used to construct this trainer
             ddp_rank (int): process (and also device) ID of the process, if the
@@ -642,7 +629,6 @@ class RLTrainer(Trainer):
 
     def _close(self):
         """Closing operations after training. """
-        self._algorithm.finish_train()
         self._close_envs()
         if self._evaluate:
             self._evaluator.close()
@@ -662,12 +648,180 @@ class RLTrainer(Trainer):
         self._evaluator.eval(self._algorithm, step_metrics)
 
 
+
+class MARLTrainer(RLTrainer):
+    def __init__(self, config: TrainerConfig, ddp_rank: int = -1):
+        super().__init__(config, ddp_rank)
+        self.num_agents = config.num_agents
+        assert self._evaluate == False #MARL does not support evaluation
+        # assert not self._algorithm.on_policy #MARL does not support on policy
+        # # number of agents must equal to number of parallel environments to create
+        # assert self.num_agents == alf.get_config_value(
+        #         "create_environment.num_parallel_environments")
+        if self._num_iterations > 0 and self._num_env_steps > 0:
+            num_iterations_with_env_interations = config.num_env_steps / (config.unroll_length) # num_iterations_with_env_interactions == calls train_iter once
+            pure_train_iters = self._num_iterations - num_iterations_with_env_interations
+            assert pure_train_iters >= 0, (
+                f"num_iterations={self._num_iterations} is not enough for "
+                f"num_env_steps={self._num_env_steps}")
+            logging.info("There is no environmental interation in the last"
+                         f"{pure_train_iters} iterations")
+        self._trainer_progress.set_termination_criterion(
+            self._num_iterations, self._num_env_steps) #TODO: ENV STEPS
+        envs = alf.get_multi_agent_env(self.num_agents) #TODO: CHECK SHOULD BE A NICE FORMAT LIST OF ENVIRONMENTS
+        env = envs[0]
+        logging.info(
+            "observation_spec=%s" % pprint.pformat(env.observation_spec()))
+        logging.info("action_spec=%s" % pprint.pformat(env.action_spec()))
+
+        # for offline buffer construction
+        untransformed_observation_spec = env.observation_spec()
+
+        data_transformer = create_data_transformer(
+            config.data_transformer_ctor, untransformed_observation_spec)
+        self._config.data_transformer = data_transformer
+
+        observation_spec = data_transformer.transformed_observation_spec
+        common.set_transformed_observation_spec(observation_spec)
+        logging.info("transformed_observation_spec=%s" %
+                     pprint.pformat(observation_spec))
+        
+        self.agents = []
+
+        for i in range(self.num_agents):
+            self.agents += [self._algorithm_ctor(
+                observation_spec=observation_spec,
+                action_spec=env.action_spec(),
+                reward_spec=env.reward_spec(),
+                env=envs[i],
+                marl=True,
+                agent_id=i,
+                config=self._config,
+                debug_summaries=self._debug_summaries)]
+        self.agents[0].set_path('') #TODO: what does this do?
+        self.agents[1].set_path('')
+        self._thread_env = None
+    
+    def _train(self):
+        envs = alf.get_multi_agent_env(self.num_agents)
+        for env in envs:
+            env.reset()
+        iter_num = int(self._trainer_progress._iter_num)
+        training_setting_summarized = False
+
+        checkpoint_interval = math.ceil(
+            (self._num_iterations
+             or self._num_env_steps) / self._num_checkpoints)
+
+        if self._num_iterations:
+            time_to_checkpoint = self._trainer_progress._iter_num + checkpoint_interval
+        else:
+            time_to_checkpoint = self._trainer_progress._env_steps + checkpoint_interval
+
+        if self._evaluate and iter_num == 0:
+            self._eval()
+
+        it = 0
+        while True:
+            t0 = time.time()
+            with record_time("time/train_iter"):
+                for i in range(self.num_agents):
+                    self.agents[i].MARL_unroll() #TODO: initial collect step for more agents is step/agent
+                for i in range(self.num_agents):
+                    train_steps = self.agents[i].MARL_train_iter()
+            # print("once", it)
+            # if it == 48:
+            # import pdb; pdb.set_trace()
+                
+            t = time.time() - t0
+            logging.log_every_n_seconds(
+                logging.INFO,
+                '%s%s -> %s: %s time=%.3f throughput=%0.2f' %
+                ('' if self._rank == -1 else f'[rank {self._rank:02d}] ',
+                 common.get_conf_file(),
+                 os.path.basename(self._root_dir.strip('/')), iter_num, t,
+                 int(train_steps) / t),
+                n_seconds=1)
+            if not training_setting_summarized and train_steps > 0:
+
+                # self._summarize_training_setting()
+                training_setting_summarized = True
+
+            # check termination
+            env_steps_metric = self.agents[0].get_step_metrics()[1] #TODO: number of episodes might be different for each agent
+            total_time_steps = env_steps_metric.result()
+            iter_num += 1
+
+            self._trainer_progress.update(iter_num, total_time_steps)
+            if ((self._num_iterations and iter_num >= self._num_iterations)
+                    or (not self._num_iterations
+                        and total_time_steps >= self._num_env_steps)):
+                break
+            if ((self._num_iterations and iter_num >= time_to_checkpoint)
+                    or (not self._num_iterations and self._num_env_steps
+                        and total_time_steps >= time_to_checkpoint)):
+                self._save_checkpoint()
+                time_to_checkpoint += checkpoint_interval
+            elif self._checkpoint_requested:
+                logging.info("Saving checkpoint upon request...")
+                self._save_checkpoint()
+                self._checkpoint_requested = False
+
+            if self._debug_requested:
+                self._debug_requested = False
+                import pdb
+                pdb.set_trace()
+            it += 1
+    
+    def _close_envs(self):
+        """Close all envs to release their resources."""
+        alf.close_marl_env()
+        if self._thread_env is not None:
+            self._thread_env.close()
+
+    def _restore_checkpoint(self):
+        checkpointer = Checkpointer(
+            ckpt_dir=os.path.join(self._train_dir, 'algorithm'),
+            algorithm=self.agents[1],
+            metrics=nn.ModuleList(self.agents[1].get_metrics()),
+            trainer_progress=self._trainer_progress)
+
+        self._trainer_restore_checkpoint(checkpointer)
+    
+    def _trainer_restore_checkpoint(self, checkpointer):
+        """Retore from saved checkpoint.
+            Args:
+                checkpointer (Checkpointer):
+        """
+        if checkpointer.has_checkpoint():
+            # Some objects (e.g. ReplayBuffer) are constructed lazily in algorithm.
+            # They only appear after one training iteration. So we need to run
+            # train_iter() once before loading the checkpoint
+            self._algorithm.train_iter()
+
+        try:
+            recovered_global_step = checkpointer.load()
+            self._trainer_progress.update()
+        except RuntimeError as e:
+            raise RuntimeError(
+                ("Checkpoint loading failed from the provided root_dir={}. "
+                 "Typically this is caused by using a wrong checkpoint. \n"
+                 "Please make sure the root_dir is set correctly. "
+                 "Use a new value for it if "
+                 "planning to train from scratch. \n"
+                 "Detailed error message: {}").format(self._root_dir, e))
+        if recovered_global_step != -1:
+            alf.summary.set_global_counter(recovered_global_step)
+
+        self._checkpointer = checkpointer
+
+
+
 class SLTrainer(Trainer):
     """Trainer for supervised learning. """
 
     def __init__(self, config: TrainerConfig):
         """Create a SLTrainer
-
         Args:
             config (TrainerConfig): configuration used to construct this trainer
         """
@@ -759,10 +913,8 @@ def _step(algorithm,
           selective_criteria_func=None):
     """Perform one step interaction using the outpupt action from ``algorithm``
     taking ``time_step`` as input. Also record the metrics.
-
     Note that this function is used both in ``play`` below and ``evaluate`` in
     ``evaluator.py``.
-
     Args:
         algorithm (RLAlgorithm): the algorithm under evaluation
         env: the environment
@@ -785,7 +937,6 @@ def _step(algorithm,
                 the environment. This is useful for implementing task specific
                 selective criteria using information contained ``env_info``,
                 e.g., success, infraction etc.
-
     Returns:
         - next time step (TimeStep): the next time step after taking an action in
             ``env``
@@ -847,15 +998,12 @@ def play(root_dir,
          selective_mode=False,
          ignored_parameter_prefixes=[]):
     """Play using the latest checkpoint under `train_dir`.
-
     The following example record the play of a trained model to a mp4 video:
     .. code-block:: bash
-
         python -m alf.bin.play \
         --root_dir=~/tmp/bullet_humanoid/ppo2/ppo2-11 \
         --num_episodes=1 \
         --record_file=ppo_bullet_humanoid.mp4
-
     Args:
         root_dir (str): same as the root_dir used for `train()`
         env (AlfEnvironment): the environment
@@ -991,11 +1139,11 @@ def play(root_dir,
                 episode_length[i] = 0
                 env_episodes[i] += 1
                 episodes += 1
-                common.log_metrics(metrics)
 
         policy_state = policy_step.state
         time_step = next_time_step
 
+    common.log_metrics(metrics)
     if recorder:
         recorder.close()
     env.reset()
